@@ -1,0 +1,55 @@
+// Zed settings for this repository.
+//
+// Zed's default Python language server is basedpyright, which runs in its
+// "recommended" mode — far stricter than pyright's default.  Against Isaac Lab
+// and torch, whose public APIs are largely unannotated, that produces a few
+// thousand reportUnknownMemberType / reportMissingParameterType warnings that
+// say nothing about this code.  Pyright's standard mode is what the project is
+// kept clean against, so use it.
+//
+// The paths and type-checking mode live in pyproject.toml under [tool.pyright],
+// which both servers read; only the choice of server belongs here.
+{
+  // Files and directories hidden from the file tree, search and file scan.
+  // Setting this replaces Zed's defaults, so they are all listed too.
+  "file_scan_exclusions": [
+    // Zed's defaults
+    "**/.git",
+    "**/.svn",
+    "**/.hg",
+    "**/.jj",
+    "**/CVS",
+    "**/.DS_Store",
+    "**/Thumbs.db",
+    "**/.classpath",
+    "**/.settings",
+    // Repo policy: agent scratch dirs, CI, editor config and caches
+    "**/.claude",
+    "**/.agents",
+    "**/.flash",
+    "**/.github",
+    "**/.pytest_cache",
+    "**/.ruff_cache",
+    "**/.zed",
+    "**/__pycache__"
+  ],
+  "languages": {
+    "Python": {
+      // Listed exhaustively on purpose. A trailing "..." re-enables the rest
+      // of Zed's Python defaults, which are pylsp — not installed, so Zed
+      // reports "No such file or directory (os error 2)" — and ty, a second
+      // type checker that does not read [tool.pyright] and so reports import
+      // errors pyright does not. One checker, configured in one place.
+      "language_servers": ["pyright", "ruff", "!basedpyright", "!pylsp", "!ty"]
+    }
+  },
+  "lsp": {
+    "pyright": {
+      "settings": {
+        "python": {
+          "pythonPath": ".venv/bin/python"
+        }
+      }
+    }
+  }
+}

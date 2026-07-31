@@ -20,12 +20,69 @@ dependencies = [
     "isaaclab_rl[rsl-rl]",
 ]
 
-[tool.setuptools]
-package-dir = {"" = "source"}
-
 [tool.setuptools.packages.find]
-where = ["source"]
-include = ["tasks*"]
+where = ["."]
+include = ["lituanicax_sdk*", "team_solution*"]
+
+[tool.setuptools.package-data]
+# The car, and the official track's meshes and centerline, ship with the SDK.
+lituanicax_sdk = ["assets/*", "tracks/**/*", "manifest.json"]
+
+# ── Linting / formatting (ruff) ───────────────────────────────────────────
+# Your editor will pick these up automatically, so it stops flagging things
+# that are deliberate.
+[tool.pytest.ini_options]
+# The repo root goes on sys.path, so `pytest` finds lituanicax_sdk whichever
+# directory you run it from.
+pythonpath = ["."]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 88
+exclude = ["IsaacLab", ".venv", "logs"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I"]
+
+[tool.ruff.lint.per-file-ignores]
+# These three must start Isaac Sim before importing anything that depends on
+# it, so their imports genuinely cannot all sit at the top.
+"team_solution/train.py" = ["E402"]
+"team_solution/play.py" = ["E402"]
+"lituanicax_sdk/evaluate.py" = ["E402"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["lituanicax_sdk", "team_solution"]
+
+# ── Type checking (pyright / Pylance) ─────────────────────────────────────
+# Isaac Lab is installed *editable*, which pip implements with an import hook
+# that only exists at runtime.  Your editor cannot follow it, so without the
+# extraPaths below every `import isaaclab...` is underlined red and you lose
+# autocomplete on the one API you use most.  Pointing straight at the sources
+# in the submodule fixes both.
+#
+# `omni` and `pxr` are deliberately absent: they are Isaac Sim's Kit
+# extensions, and they genuinely do not exist until the simulator is running.
+# The handful of imports of them are marked at their import site instead.
+#
+# typeCheckingMode is pinned rather than left at the default because
+# basedpyright — Zed's out-of-the-box Python server — defaults to a much
+# stricter "recommended" mode, and Isaac Lab and torch are unannotated enough
+# that it buries real problems under thousands of reportUnknown* warnings.
+# This repository is kept clean at "standard"; .zed/settings.json also selects
+# plain pyright.
+[tool.pyright]
+typeCheckingMode = "standard"
+venvPath = "."
+venv = ".venv"
+extraPaths = [
+    ".",
+    "IsaacLab/source/isaaclab",
+    "IsaacLab/source/isaaclab_assets",
+    "IsaacLab/source/isaaclab_rl",
+    "IsaacLab/source/isaaclab_tasks",
+]
+exclude = ["IsaacLab", ".venv", "logs", "**/__pycache__"]
 
 [tool.uv]
 environments = ["sys_platform == 'linux' and platform_machine == 'x86_64' and python_full_version == '3.11.*'"]

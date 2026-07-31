@@ -1,0 +1,14 @@
+{
+  // Files and directories hidden from the Explorer. These are shared via git
+  // so every clone gets the same view.
+  "files.exclude": {
+    "**/.claude": true,
+    "**/.agents": true,
+    "**/.flash": true,
+    "**/.github": true,
+    "**/.pytest_cache": true,
+    "**/.ruff_cache": true,
+    "**/.zed": true,
+    "**/__pycache__": true
+  }
+}

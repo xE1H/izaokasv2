@@ -1,0 +1,43 @@
+name: SDK guard
+
+# Two checks, both cheap:
+#   1. the SDK is untouched — it defines the car and the lap clock, so a change
+#      here means this branch's lap times cannot be compared with anyone else's;
+#   2. the tests still pass, which needs no GPU and no Isaac Sim.
+
+on: [push, pull_request]
+
+jobs:
+  sdk-unchanged:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Check lituanicax_sdk/ is unmodified
+        run: |
+          base="${{ github.event.pull_request.base.sha || github.event.before }}"
+          if [ -z "$base" ] || [ "$base" = "0000000000000000000000000000000000000000" ]; then
+            echo "No base commit to compare against; skipping."
+            exit 0
+          fi
+          changed=$(git diff --name-only "$base" HEAD -- lituanicax_sdk/)
+          if [ -n "$changed" ]; then
+            echo "::error::The SDK was modified. Lap times from this branch are"
+            echo "::error::not comparable with other teams'. Files changed:"
+            echo "$changed"
+            exit 1
+          fi
+          echo "SDK unchanged."
+
+  tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      # The SDK's own tests need only torch and pytest — no Isaac Sim, no GPU.
+      - run: pip install torch --index-url https://download.pytorch.org/whl/cpu
+      - run: pip install pytest gymnasium
+      - run: python -m pytest tests/ -q

@@ -101,16 +101,29 @@ local_bin="${HOME}/.local/bin"
 mkdir -p "${local_bin}"
 PRIME_WRAPPER='if nvidia-smi -L 2>/dev/null | grep -qi intel; then export __NV_PRIME_RENDER_OFFLOAD=1; fi'
 
-for name in train play visualize; do
+# train and play are part of the team's half of the repository, so they live in
+# team_solution/ next to the environment and the PPO config they drive.
+for name in train play; do
     cat > "${local_bin}/${name}" <<SCRIPT
 #!/bin/bash
 PROJECT_DIR="${script_dir}"
 ${PRIME_WRAPPER}
 cd "\$PROJECT_DIR"
-exec uv run python ${name}.py "\$@"
+exec uv run python -m team_solution.${name} "\$@"
 SCRIPT
     chmod +x "${local_bin}/${name}"
 done
+
+# The official evaluator lives in the SDK, not at the project root — it is the
+# scoring rules, not a project script.
+cat > "${local_bin}/evaluate" <<SCRIPT
+#!/bin/bash
+PROJECT_DIR="${script_dir}"
+${PRIME_WRAPPER}
+cd "\$PROJECT_DIR"
+exec uv run python -m lituanicax_sdk.evaluate "\$@"
+SCRIPT
+chmod +x "${local_bin}/evaluate"
 
 echo ""
 echo "=============================="
@@ -120,7 +133,9 @@ echo "  - Isaac Lab:    IsaacLab/ @ v2.3.0"
 echo "  - Isaac Sim:    5.1.0 (pip: nvidia index)"
 echo ""
 echo "  Commands:"
-echo "    train --task ConeTrack --num_envs 10 --headless"
-echo "    play  --task ConeTrack --num_envs 1"
-echo "    visualize --task ConeTrack"
+echo "    train --num_envs 200 --headless   # train a policy"
+echo "    play  --num_envs 1                # watch the newest checkpoint"
+echo "    evaluate                          # official score: 100 agents, best lap"
+echo ""
+echo "  Edit team_solution/ ; lituanicax_sdk/ is locked (see docs/SDK.md)."
 echo "=============================="

@@ -29,7 +29,7 @@ Getting started::
         def compute_reward(self, car):
             return car.speed_forward / car.max_speed_m_s * car.step_dt
 
-See ``docs/SDK.md`` for what ``car`` gives you, and ``team_solution/env.py``
+See ``README.md`` for what ``car`` gives you, and ``team_solution/env.py``
 for a complete worked example.
 """
 

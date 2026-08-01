@@ -25,7 +25,6 @@ Drop the files in this directory, register the track, and use it::
         centerline_csv=str(HERE / "figure_eight_line.csv"),
         # Blender to Isaac Sim, if your export needs it.
         centerline_scale=(1.0, 1.0),
-        spawn_points=[(0.0, 0.0, 90.0)],  # (x, y, heading_deg) in CSV coords
     ))
 
 then set ``track = get("figure_eight")`` in ``env_cfg.py``.

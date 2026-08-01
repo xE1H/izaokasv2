@@ -241,7 +241,7 @@ class RaceEnv(DirectRLEnv, metaclass=SealedMeta):
         raise NotImplementedError(
             f"{type(self).__name__} must implement compute_observations(car). "
             "The SDK simulates the car; what the policy sees is yours to decide. "
-            "See docs/SDK.md and team_solution/env.py."
+            "See README.md and team_solution/env.py."
         )
 
     def compute_reward(self, car: CarState) -> torch.Tensor:
@@ -256,7 +256,7 @@ class RaceEnv(DirectRLEnv, metaclass=SealedMeta):
         """
         raise NotImplementedError(
             f"{type(self).__name__} must implement compute_reward(car). "
-            "See docs/SDK.md and team_solution/env.py."
+            "See README.md and team_solution/env.py."
         )
 
     def compute_terminations(self, car: CarState) -> torch.Tensor:

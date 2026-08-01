@@ -27,6 +27,12 @@ import torch
 from .track import Track
 from .vehicle import VehicleCfg
 
+#: Below this ground speed a car has no meaningful direction of travel, so
+#: :attr:`CarState.going_forward` reads its heading instead of its velocity.
+#: Small enough that any car actually driving is measured by its motion, large
+#: enough to cover a car settling onto its suspension at a standing start.
+STANDSTILL_SPEED_M_S = 0.2
+
 
 class CarState:
     """A read-only view of every car in the scene, for one policy step."""
@@ -354,8 +360,19 @@ class CarState:
         depends on the car, not on the track. Every track-relative signal
         derived from this mirrors itself automatically, which is what lets one
         policy drive the track in both directions.
+
+        A car that is not moving has no direction of travel, so below
+        :data:`STANDSTILL_SPEED_M_S` this reads the direction the car *points*
+        instead. Taking the velocity alone would call every stationary car
+        reversed — the dot product of a zero velocity is zero, which is not
+        greater than zero — and hand it a mirrored view of the track for the
+        first few steps of every episode, exactly when it is choosing which way
+        to steer away from the line.
         """
-        return (self.lin_vel_w[:, :2] * self.track_tangent).sum(dim=-1) > 0.0
+        along_velocity = (self.lin_vel_w[:, :2] * self.track_tangent).sum(dim=-1)
+        along_heading = (self.forward_xy * self.track_tangent).sum(dim=-1)
+        moving = self.speed_ground > STANDSTILL_SPEED_M_S
+        return torch.where(moving, along_velocity > 0.0, along_heading > 0.0)
 
     @cached_property
     def direction_sign(self) -> torch.Tensor:

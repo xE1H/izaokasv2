@@ -80,7 +80,6 @@ def circle_track(tmp_path):
             walls_usd="unused.usd",
             centerline_csv=str(path),
             centerline_scale=(1.0, 1.0),
-            spawn_points=[(RADIUS, 0.0, 90.0)],
             start_finish_index=0,
         ),
         device="cpu",

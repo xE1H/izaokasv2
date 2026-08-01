@@ -56,7 +56,7 @@ def test_the_lock_error_explains_what_to_do_instead():
     with pytest.raises(LockedParameterError) as excinfo:
         VEHICLE.drive_torque_nm = 5.0
     message = str(excinfo.value)
-    assert "docs/SDK.md" in message
+    assert "README.md" in message
     assert "drive_torque_nm" in message
 
 
@@ -210,7 +210,6 @@ def test_official_tracks_cannot_be_redefined():
         name="official",
         walls_usd="x.usd",
         centerline_csv="x.csv",
-        spawn_points=[(0, 0, 0)],
     )
     with pytest.raises(ValueError, match="cannot be redefined"):
         register(fake)
@@ -221,7 +220,6 @@ def test_teams_can_register_their_own_tracks():
         name="my_track",
         walls_usd="walls.usd",
         centerline_csv="line.csv",
-        spawn_points=[(0.0, 0.0, 0.0)],
     )
     register(mine, overwrite=True)
     assert get("my_track") is mine
@@ -230,7 +228,7 @@ def test_teams_can_register_their_own_tracks():
 
 def test_registering_twice_by_accident_is_caught():
     cfg = TrackCfg(
-        name="dup", walls_usd="w.usd", centerline_csv="c.csv", spawn_points=[(0, 0, 0)]
+        name="dup", walls_usd="w.usd", centerline_csv="c.csv"
     )
     register(cfg, overwrite=True)
     with pytest.raises(ValueError, match="already registered"):

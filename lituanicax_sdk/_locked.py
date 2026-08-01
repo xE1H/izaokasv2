@@ -28,7 +28,7 @@ MANIFEST_PATH = _SDK_DIR / "manifest.json"
 
 _DOCS_HINT = (
     "This parameter is fixed by the competition rules so that every team's car "
-    "behaves identically — see docs/SDK.md for what you can change instead."
+    "behaves identically — see README.md for what you can change instead."
 )
 
 
@@ -139,7 +139,7 @@ class SealedMeta(type):
                             "Configure the environment instead of subclassing "
                             "it: observations, rewards, terminations, spawning "
                             "and tracks are all fields on RaceEnvCfg.  "
-                            "See docs/SDK.md."
+                            "See README.md."
                         )
         return super().__new__(mcls, name, bases, namespace, **kwargs)
 

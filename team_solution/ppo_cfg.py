@@ -22,7 +22,7 @@ class TeamPPORunnerCfg(RslRlOnPolicyRunnerCfg):
 
     # One "iteration" = collect `num_steps_per_env` steps in every environment,
     # then run a few passes of gradient descent over that batch of experience.
-    num_steps_per_env: int = 600
+    num_steps_per_env: int = 800
     max_iterations: int = 500  # can be overridden with --max_iterations
     save_interval: int = 10  # save a checkpoint every N iterations
 

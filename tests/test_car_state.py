@@ -150,6 +150,33 @@ def test_direction_is_inferred_from_velocity(robot, make_state):
     assert not bool(make_state(robot).going_forward)
 
 
+def test_a_stationary_car_takes_its_direction_from_where_it_points(robot, make_state):
+    """Every episode starts from rest, and a car at rest has no velocity to read.
+
+    Reading the velocity alone called every stationary car *reversed* — a zero
+    dot product is not greater than zero — so the whole track-relative half of
+    the observation was mirrored for the first few steps of every episode, which
+    is exactly when the policy is choosing which way to steer. A car spawned on
+    the centerline facing along the track then drove itself into the wall.
+    """
+    robot.data.root_pos_w[:, 0] = RADIUS
+    robot.data.root_lin_vel_w[:] = 0.0
+
+    robot.set_yaw(math.pi / 2)  # along the stored centerline order
+    assert bool(make_state(robot).going_forward)
+
+    robot.set_yaw(-math.pi / 2)  # against it
+    assert not bool(make_state(robot).going_forward)
+
+
+def test_a_moving_car_still_takes_its_direction_from_its_velocity(robot, make_state):
+    """Sliding backwards while pointing forwards reads as going backwards."""
+    robot.data.root_pos_w[:, 0] = RADIUS
+    robot.set_yaw(math.pi / 2)
+    robot.data.root_lin_vel_w[:, 1] = -2.0
+    assert not bool(make_state(robot).going_forward)
+
+
 def test_heading_error_is_zero_when_aligned_either_way(robot, make_state):
     """Driving the track backwards must not read as a maximal heading error."""
     robot.data.root_pos_w[:, 0] = RADIUS

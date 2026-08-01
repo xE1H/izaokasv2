@@ -20,10 +20,15 @@ Three rules keep the numbers honest:
 
 * **Arming** — the car must leave the gate window before a crossing counts, so
   sitting on the line does not tick over laps.
-* **Travel** — it must reach the far side of the loop, so nudging over the line
-  and reversing back is not a lap.
+* **Travel** — a *timed* lap must reach the far side of the loop, so nudging
+  over the line and reversing back is not a lap.
 * **Out-lap** — the first crossing after a spawn only starts the clock.  Cars
-  start wherever they start, so that first partial loop is never timed.
+  start wherever they start, so that first partial loop is never timed.  The
+  travel rule does not apply to it: a car that spawns a few metres before the
+  line has legitimately reached the line, and making it drive a whole extra lap
+  before the clock even starts would cost it an attempt it had earned.  Nothing
+  is measured by that crossing, and the timed lap that follows still has to go
+  all the way round.
 
 Both directions round the track work: crossing is a sign change in the distance
 to the plane, and travel is measured the short way round, whichever way the car
@@ -40,6 +45,101 @@ import torch
 from .track import Track
 
 
+class AttemptTimer:
+    """Times one lap from where a car was put down back to the same place.
+
+    :class:`LapTimer` above measures laps between crossings of the *track's*
+    start/finish line, which is what training needs: cars respawn all over the
+    track and their laps still have to mean one thing. It costs an out-lap,
+    though — the drive from wherever a car starts to the line is not timed, and
+    on the official track that is another 15 m in one direction and 35 m in the
+    other.
+
+    A scored attempt is one car from one known place, so it can do better. The
+    gate is the plane through the *start* point at right angles to the
+    centerline there — the same shape of gate, moved — and the clock runs from
+    the instant the car is spawned. One lap of driving for one lap of time,
+    and the attempt is over the moment the car comes back over the line it
+    started on.
+
+    Comparability survives because the evaluator puts every team's car on the
+    same point: the line moves with the spawn, and the spawn is fixed.
+
+    The two rules that keep :class:`LapTimer` honest apply here too: the car has
+    to leave the gate window before a crossing counts, and it has to get most of
+    the way round the loop, so edging back over the line is not a lap. What it
+    does not need is the out-lap rule — there is nothing to discard, because the
+    clock and the car start together.
+    """
+
+    #: A lap must reach at least this fraction of the way round the loop.
+    MIN_TRAVEL_FRACTION = 0.45
+
+    def __init__(
+        self,
+        track: Track,
+        start_xy: torch.Tensor,
+        step_dt: float,
+        device: torch.device | str,
+    ):
+        """``start_xy`` is where each car was put down, ``[N, 2]``."""
+        self.track = track
+        self.step_dt = step_dt
+        self.device = torch.device(device)
+
+        num_envs = start_xy.shape[0]
+        # One gate per car, through the point it started from. Reading it from
+        # the cars themselves rather than from the spawn manager means this
+        # works however they were placed, preset points included.
+        self.start_xy = start_xy.clone()
+        index, _ = track.nearest(self.start_xy)
+        self.gate_normal = track.tangents[index]
+        self.start_arc = track.arc_length[index]
+
+        self._armed = torch.zeros(num_envs, dtype=torch.bool, device=self.device)
+        self._prev_offset = torch.zeros(num_envs, device=self.device)
+        self._max_travel = torch.zeros(num_envs, device=self.device)
+
+    def update(
+        self,
+        pos_xy: torch.Tensor,
+        nearest_idx: torch.Tensor,
+        episode_step: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """Advance the clock one policy step.
+
+        Args:
+            pos_xy: ``[N, 2]`` world positions of the cars.
+            nearest_idx: ``[N]`` index of the nearest centerline point.
+            episode_step: ``[N]`` steps elapsed since the car was spawned.
+
+        Returns:
+            ``(finished, elapsed_s)`` — ``[N]`` boolean, true on the step the
+            lap closes, and ``[N]`` the time since the spawn.
+        """
+        track = self.track
+        length = track.track_length
+
+        offset = ((pos_xy - self.start_xy) * self.gate_normal).sum(dim=-1)
+        along = (track.arc_length[nearest_idx] - self.start_arc) % length
+        travel = torch.minimum(along, length - along)
+        self._max_travel = torch.maximum(self._max_travel, travel)
+
+        at_the_line = travel < track.cfg.lap_gate_window_m
+        self._armed |= ~at_the_line
+        crossed = (self._prev_offset * offset) < 0.0
+        far_enough = self._max_travel > self.MIN_TRAVEL_FRACTION * length
+        # A sample landing exactly on the plane has no sign; keeping the last
+        # non-zero one stops that swallowing the crossing on the step after.
+        self._prev_offset = torch.where(
+            offset != 0.0, offset.detach(), self._prev_offset
+        )
+
+        finished = self._armed & crossed & at_the_line & far_enough
+        # The clock started when the car did, so the step count *is* the time.
+        return finished, episode_step.float() * self.step_dt
+
+
 class LapTimer:
     """Times laps for ``num_envs`` cars on one shared track.
 
@@ -48,7 +148,8 @@ class LapTimer:
     :attr:`best_lap_time_s`, which is the best seen anywhere in the run.
     """
 
-    #: A lap must reach at least this fraction of the way round the loop.
+    #: A timed lap must reach at least this fraction of the way round the loop.
+    #: The out-lap crossing that starts the clock is exempt — see :meth:`update`.
     MIN_TRAVEL_FRACTION = 0.45
 
     def __init__(
@@ -122,6 +223,16 @@ class LapTimer:
         self.lap_count[env_ids] = 0
         self.last_lap_time_s[env_ids] = 0.0
 
+    @property
+    def on_the_clock(self) -> torch.Tensor:
+        """True where the out-lap is over and a lap is being timed, ``[N]``.
+
+        Cars start wherever they are put, so the drive from the spawn point to
+        the start/finish line is never timed. This says which cars are past
+        that and are now on a lap that will be recorded.
+        """
+        return self._started
+
     def invalidate(self, mask: torch.Tensor) -> None:
         """Mark the lap in progress as not counting, for the given cars.
 
@@ -169,7 +280,14 @@ class LapTimer:
         went_far_enough = (
             self._max_travel > self.MIN_TRAVEL_FRACTION * track.track_length
         )
-        completing = self._armed & crossed & at_gate & went_far_enough
+        # The travel rule guards *timed* laps. The crossing that ends the
+        # out-lap is exempt: it measures nothing, and a car that spawned a short
+        # way before the line really has reached the line. Requiring a full loop
+        # of travel there would silently cost it a whole extra lap before its
+        # clock even started — and on the official track, where the cars are
+        # placed 17 m before the line, that is exactly what used to happen.
+        at_the_line = self._armed & crossed & at_gate
+        completing = at_the_line & (went_far_enough | ~self._started)
         # Keep the last *non-zero* offset as the reference. A sample landing
         # exactly on the plane has no sign, and overwriting with zero would
         # swallow the sign change on the following step.

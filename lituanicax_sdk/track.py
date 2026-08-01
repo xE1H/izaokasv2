@@ -22,7 +22,7 @@ ever start the simulator.
 from __future__ import annotations
 
 import csv
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 
 import torch
@@ -32,10 +32,18 @@ import torch
 class TrackCfg:
     """Everything that describes one track.
 
-    ``centerline_scale`` is the Blender-to-Isaac coordinate transform.  In the
-    original code this lived in two fields called ``spawn_x_scale`` and
-    ``spawn_y_scale``, which was misleading: they were applied to the centerline
-    CSV as well as to the spawn presets.  It belongs to the track.
+    A track is geometry: where the walls are, where the middle is, and where
+    the lap is measured from.  It says nothing about where cars start — that is
+    a training decision and lives with the team, in
+    :class:`~lituanicax_sdk.spawn.SpawnManager` and its subclasses.
+
+    ``centerline_scale`` has to agree with ``mesh_scale``: the walls and the
+    centerline describe the same track, so whatever scales one scales the
+    other.  An earlier version let a spawn-only fudge factor onto the
+    centerline, which scaled the official one 15% too large — it then ran
+    through the walls for a quarter of the lap, and every track-relative
+    observation was measured against a racing line that was not on the track.
+    :meth:`Track.validate` now checks the result against the walls.
     """
 
     name: str
@@ -45,10 +53,7 @@ class TrackCfg:
 
     # Geometry
     mesh_scale: float = 0.85
-    centerline_scale: tuple[float, float] = (-0.9775, -0.9775)
-
-    # Where cars may start: (x, y, heading_deg) in centerline CSV coordinates.
-    spawn_points: list[tuple[float, float, float]] = field(default_factory=list)
+    centerline_scale: tuple[float, float] = (-0.85, -0.85)
 
     # Lap timing
     start_finish_index: int = 0  # index into the centerline
@@ -328,8 +333,7 @@ class Track:
                 "observations need a denser line."
             )
 
-        if not self.cfg.spawn_points:
-            problems.append("no spawn points defined, so cars have nowhere to start.")
+        problems += self._wall_alignment_problems()
 
         if self.cfg.lap_gate_window_m >= 0.25 * self.track_length:
             problems.append(
@@ -338,6 +342,71 @@ class Track:
                 "gate should be a small window, not a quarter of the track."
             )
 
+        return problems
+
+    #: A centerline point should have wall on both sides no further away than
+    #: this multiple of the track's typical clearance. Generous, because a
+    #: hairpin's outside rail is legitimately further off than a straight's.
+    ENCLOSURE_TOLERANCE = 5.0
+
+    def _wall_alignment_problems(self) -> list[str]:
+        """Check that the centerline actually runs between the walls.
+
+        The centerline is the middle of the track, so by definition it has wall
+        on either side of it. When it does not, the transform that brought it
+        out of Blender does not match the one the wall mesh got — and nothing
+        else notices, because every track-relative observation is computed from
+        the centerline alone and looks perfectly reasonable while being measured
+        against a line that is not on the track.
+
+        That is not hypothetical: the official centerline shipped scaled 15%
+        larger than its own walls, ran outside them for a quarter of the lap,
+        and took every cross-track error, lookahead point and curvature reading
+        with it.
+        """
+        if self.wall_seg_a is None or self.wall_seg_b is None:
+            return []  # nothing to compare against until the walls are loaded
+
+        # A sample is plenty: this catches a systematic mismatch, not a single
+        # stray point, and the comparison is every point against every segment.
+        step = max(1, self.num_points // 200)
+        points = self.points[::step]
+        tangents = self.tangents[::step]
+        left_normal = torch.stack([-tangents[:, 1], tangents[:, 0]], dim=-1)
+
+        middles = 0.5 * (self.wall_seg_a + self.wall_seg_b)
+        to_wall = middles.unsqueeze(0) - points.unsqueeze(1)  # [P, S, 2]
+        distance = to_wall.norm(dim=-1)
+        sideways = (to_wall * left_normal.unsqueeze(1)).sum(dim=-1)
+
+        far = torch.full_like(distance, float("inf"))
+        to_the_left = torch.where(sideways > 0, distance, far).min(dim=1).values
+        to_the_right = torch.where(sideways < 0, distance, far).min(dim=1).values
+
+        clearance = torch.minimum(to_the_left, to_the_right)
+        typical = float(clearance.median())
+        stranded = torch.maximum(to_the_left, to_the_right) > (
+            self.ENCLOSURE_TOLERANCE * typical
+        )
+        outside = float(stranded.float().mean())
+
+        problems = []
+        if outside > 0.1:
+            problems.append(
+                f"{outside:.0%} of the centerline has wall on one side only, so it "
+                "is not running between the walls. That is a coordinate mismatch "
+                f"rather than a track: check that centerline_scale "
+                f"{self.cfg.centerline_scale} agrees with the mesh_scale "
+                f"{self.cfg.mesh_scale} the walls were built at."
+            )
+
+        tightest = float(self.distance_to_walls(points).min())
+        if tightest < 0.05:
+            problems.append(
+                f"the centerline comes within {tightest:.3f} m of a wall, which "
+                "leaves no room for a car; the centerline should be the middle of "
+                "the track, not touching the edge of it."
+            )
         return problems
 
     def describe(self) -> str:

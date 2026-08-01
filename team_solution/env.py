@@ -19,7 +19,7 @@ What you *cannot* change is the car itself: the mass, the motor, the brakes,
 the steering, the tyres and the simulation rate are the same for every team, so
 that a lap time says something about the policy rather than the vehicle. You
 can read all of them (``car.max_speed_m_s``, ``car.drive_torque_nm``, …); see
-``docs/SDK.md``.
+``README.md``.
 """
 
 from __future__ import annotations
@@ -30,13 +30,15 @@ import torch
 from isaaclab.utils import configclass
 
 from lituanicax_sdk import CarState, RaceEnv, RaceEnvCfg
-from lituanicax_sdk.spawn import SpawnManager
+from lituanicax_sdk.spawn import PresetSpawnManager
 from lituanicax_sdk.tracks import OFFICIAL
 
-#: How far ahead the lookahead points sit, counted in centerline points. On the
-#: official track the points are about 5 cm apart, so this is roughly 0.5, 1, 2,
-#: 3.5 and 5 m ahead. This is the thing that lets the policy brake *before* a
-#: corner rather than in it, and is usually the first thing worth changing.
+#: How far ahead the lookahead points sit, counted in centerline *points*, not
+#: metres. On the official track those are 1.7 to 11.5 cm apart (median 3.7),
+#: so these offsets average roughly 0.4, 0.7, 1.5, 2.6 and 3.7 m ahead — and
+#: shift as the car moves between the sparse straights and the dense corners.
+#: This is the thing that lets the policy brake *before* a corner rather than
+#: in it, and is usually the first thing worth changing.
 LOOKAHEAD_OFFSETS = [10, 20, 40, 70, 100]
 
 #: Scales, chosen so the numbers the network sees sit roughly in [-1, 1].
@@ -61,6 +63,22 @@ ROLL_REFERENCE_DEG = 15.0  # the lean angle that costs the full roll penalty
 #: Terminations.
 STALL_SPEED_FRACTION = 0.04  # "too slow" as a fraction of top speed
 STALL_AFTER_STEPS = 45  # but only once the car has had time to get going
+
+#: Where cars start, as ``(x, y, heading_deg)`` in world metres. Yours: this is
+#: the curriculum, and the SDK has no opinion about it — its own default is the
+#: world origin and nothing else. Five points spread round the official track,
+#: each used facing either way, so one policy learns it in both directions.
+#:
+#: The scored attempt always starts at (0, 0), so it is worth keeping a start
+#: there, or near it, among whatever else you train on.
+SPAWN_POINTS = [
+    (0.00, 0.00, 0.0),  # the origin, where `evaluate` starts
+    (-0.74, -4.89, 20.8),
+    (-3.82, -3.24, -156.0),
+    (-3.54, -1.93, -154.5),
+    (5.34, -3.62, 0.0),
+    (3.52, -4.59, -217.9),
+]
 
 #: How many numbers compute_observations returns. Derived from the constants
 #: above, so adding a lookahead point does not leave a number to update by hand
@@ -87,10 +105,16 @@ class TeamRaceEnvCfg(RaceEnvCfg):
     #: — register your own in ``team_solution/tracks/``.
     track = OFFICIAL
 
-    #: Each preset start point is used facing either way, so one policy learns
-    #: the track in both directions. The split adapts: whichever direction is
-    #: doing worse gets more cars, and the two converge back towards 50/50.
-    spawn_manager = SpawnManager(jitter_rad=0.1, balance_directions=True)
+    #: Where cars start, from the list above. Each point is used facing either
+    #: way, so one policy learns the track in both directions, and the split
+    #: adapts: whichever direction is doing worse gets more cars, and the two
+    #: converge back towards 50/50.
+    #:
+    #: The SDK's default is a single car on the world origin. Everything past
+    #: that — how many points, where, which way, how much jitter — is yours.
+    spawn_manager = PresetSpawnManager(
+        points=SPAWN_POINTS, jitter_rad=0.1, balance_directions=True
+    )
 
 
 # ══════════════════════════════════════════════════════════════════════════

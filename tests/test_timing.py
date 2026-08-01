@@ -14,7 +14,7 @@ import math
 import pytest
 import torch
 
-from lituanicax_sdk.timing import LapTimer
+from lituanicax_sdk.timing import AttemptTimer, LapTimer
 from lituanicax_sdk.track import Track, TrackCfg
 
 RADIUS = 5.0
@@ -37,7 +37,6 @@ def circle_track(tmp_path):
         walls_usd="unused.usd",
         centerline_csv=str(path),
         centerline_scale=(1.0, 1.0),
-        spawn_points=[(RADIUS, 0.0, 90.0)],
         start_finish_index=0,
         lap_gate_window_m=2.0,
     )
@@ -100,6 +99,46 @@ def test_first_crossing_is_an_out_lap_and_is_not_timed(circle_track):
     assert not any(flags), "the out-lap must not be timed"
     assert int(timer.lap_count[0]) == 0
     assert float(timer.best_lap_time_s) == 0.0
+
+
+def test_a_spawn_just_before_the_line_gets_a_timed_lap_one_lap_later(circle_track):
+    """The out-lap is the stretch from the spawn to the line, not a whole lap.
+
+    Cars start wherever they are put — the evaluator puts them 17 m before the
+    start/finish line on the official track. An earlier version applied the
+    travel rule to the crossing that *starts* the clock as well as to timed
+    laps, so that short stretch did not count as reaching the line and every
+    attempt silently cost an extra full lap before anything was measured.
+    """
+    timer = _timer(circle_track)
+    steps_per_lap = 600
+    # A tenth of a lap before the line — 3.1 m, well past the 2 m gate window.
+    flags = _drive(timer, _laps(1.2, steps_per_lap, offset=-2.0 * math.pi / 10))
+
+    assert sum(flags) == 1, "the line, then one lap, is one timed lap"
+    assert int(timer.lap_count[0]) == 1
+    assert float(timer.best_lap_time_s) == pytest.approx(
+        steps_per_lap * STEP_DT, rel=0.02
+    )
+
+
+def test_a_short_out_lap_does_not_let_a_nudged_lap_through(circle_track):
+    """The out-lap exemption must not become a way of skipping the loop.
+
+    A car that crosses the line from its spawn starts the clock, but the lap
+    that follows still has to go all the way round.
+    """
+    timer = _timer(circle_track)
+    arc = 3.0 / RADIUS  # swing 3 m either side, clear of the 2 m gate window
+
+    angles = []
+    for _ in range(20):
+        angles += [-arc + 2.0 * arc * i / 20 for i in range(21)]
+        angles += [arc - 2.0 * arc * i / 20 for i in range(21)]
+    flags = _drive(timer, angles)
+
+    assert not any(flags), "crossing the line without going round is not a lap"
+    assert int(timer.lap_count[0]) == 0
 
 
 def test_second_crossing_is_a_timed_lap(circle_track):
@@ -298,6 +337,80 @@ def test_cars_are_timed_independently(circle_track):
     )
     # The run-wide best is the quicker of the two.
     assert float(timer.best_lap_time_s) == pytest.approx(300 * STEP_DT, rel=0.05)
+
+
+# ── The scored attempt: one lap, timed from the spawn ─────────────────────
+
+
+def _at(theta, radius=RADIUS):
+    return torch.tensor([[radius * math.cos(theta), radius * math.sin(theta)]])
+
+
+def _drive_attempt(track, angles, start_theta=None):
+    """Drive an attempt from ``angles[0]``; return (finish step, time, times)."""
+    start = _at(angles[0] if start_theta is None else start_theta)
+    timer = AttemptTimer(track, start, step_dt=STEP_DT, device="cpu")
+
+    for step, theta in enumerate(angles):
+        pos = _at(theta)
+        idx, _ = track.nearest(pos)
+        finished, elapsed = timer.update(pos, idx, torch.tensor([step]))
+        if bool(finished[0]):
+            return step, float(elapsed[0])
+    return None, None
+
+
+def test_an_attempt_is_timed_from_the_spawn_with_no_out_lap(circle_track):
+    """The clock starts when the car is put down, not when it reaches a line."""
+    steps_per_lap = 600
+    angles = [2.0 * math.pi * i / steps_per_lap for i in range(steps_per_lap + 10)]
+    step, elapsed = _drive_attempt(circle_track, angles)
+
+    assert step is not None, "one lap from the spawn point must finish the attempt"
+    # One lap of driving, and the time is the whole of it — the drive to the
+    # line is the lap, so the time is the step count, not a fraction of it.
+    assert elapsed == pytest.approx(steps_per_lap * STEP_DT, rel=0.02)
+    assert step == pytest.approx(steps_per_lap, rel=0.02)
+
+
+def test_the_attempt_line_moves_with_the_spawn(circle_track):
+    """Starting anywhere gives one lap back to that same place, same time."""
+    steps_per_lap = 600
+    for offset in (0.0, math.pi / 2, math.pi, 3.4):
+        angles = [
+            offset + 2.0 * math.pi * i / steps_per_lap
+            for i in range(steps_per_lap + 10)
+        ]
+        _, elapsed = _drive_attempt(circle_track, angles)
+        assert elapsed == pytest.approx(steps_per_lap * STEP_DT, rel=0.02), offset
+
+
+def test_an_attempt_is_timed_the_same_driven_backwards(circle_track):
+    steps_per_lap = 480
+    forward = [2.0 * math.pi * i / steps_per_lap for i in range(steps_per_lap + 10)]
+    backward = [-a for a in forward]
+    _, one_way = _drive_attempt(circle_track, forward)
+    _, other_way = _drive_attempt(circle_track, backward)
+    assert one_way == pytest.approx(other_way, rel=0.02)
+
+
+def test_nudging_over_the_start_line_does_not_finish_an_attempt(circle_track):
+    """Rolling back and forth over the line is not a lap, here either."""
+    arc = 3.0 / RADIUS
+    angles = []
+    for _ in range(20):
+        angles += [-arc + 2.0 * arc * i / 20 for i in range(21)]
+        angles += [arc - 2.0 * arc * i / 20 for i in range(21)]
+    step, _ = _drive_attempt(circle_track, angles, start_theta=0.0)
+    assert step is None
+
+
+def test_half_a_lap_does_not_finish_an_attempt(circle_track):
+    """Turning round halfway and coming back is not a lap."""
+    out = [math.pi * i / 300 for i in range(301)]  # half a circle
+    back = out[::-1]
+    step, _ = _drive_attempt(circle_track, out + back)
+    assert step is None
 
 
 def test_log_dict_omits_best_until_a_lap_exists(circle_track):

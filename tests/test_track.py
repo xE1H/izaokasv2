@@ -40,7 +40,6 @@ def make_track(path, **kwargs):
         walls_usd="unused.usd",
         centerline_csv=path,
         centerline_scale=(1.0, 1.0),
-        spawn_points=kwargs.pop("spawn_points", [(5.0, 0.0, 90.0)]),
         **kwargs,
     )
     return Track(cfg, device="cpu")
@@ -63,11 +62,60 @@ def test_centerline_scale_is_applied(tmp_path):
         walls_usd="w.usd",
         centerline_csv=path,
         centerline_scale=(2.0, 2.0),
-        spawn_points=[(0.0, 0.0, 0.0)],
     )
     track = Track(cfg, device="cpu")
     # A unit circle scaled by 2 has circumference 4π.
     assert track.track_length == pytest.approx(4 * math.pi, rel=1e-3)
+
+
+def wall_ring(track, radius, n=360):
+    """A closed polyline of ``n`` segments at ``radius``, as wall segments."""
+    points = torch.tensor(
+        [
+            [
+                radius * math.cos(2 * math.pi * i / n),
+                radius * math.sin(2 * math.pi * i / n),
+            ]
+            for i in range(n + 1)
+        ]
+    )
+    return points[:-1], points[1:]
+
+
+def add_walls(track, inner=4.65, outer=5.35):
+    """Give a circle track two rails, 0.7 m apart, centred on the centerline."""
+    inner_a, inner_b = wall_ring(track, inner)
+    outer_a, outer_b = wall_ring(track, outer)
+    track.wall_seg_a = torch.cat([inner_a, outer_a])
+    track.wall_seg_b = torch.cat([inner_b, outer_b])
+    return track
+
+
+def test_a_centerline_between_the_walls_is_fine(tmp_path):
+    track = add_walls(make_track(write_csv(tmp_path / "c.csv", circle_points())))
+    assert track.validate() == []
+
+
+def test_a_centerline_that_misses_the_walls_is_reported(tmp_path):
+    """The failure that shipped: one transform for the walls, another for the line.
+
+    The official centerline was scaled 15% larger than the mesh it describes, so
+    it ran through the walls for a quarter of the lap and every track-relative
+    observation was measured against a line that was not on the track. Nothing
+    caught it, because nothing compared the two.
+    """
+    path = write_csv(tmp_path / "c.csv", circle_points())
+    cfg = TrackCfg(
+        name="mis_scaled",
+        walls_usd="unused.usd",
+        centerline_csv=path,
+        centerline_scale=(1.15, 1.15),  # walls stay where they are
+    )
+    track = add_walls(Track(cfg, device="cpu"))
+
+    problems = track.validate()
+    assert any("wall on one side only" in p for p in problems), problems
+    assert any("centerline_scale" in p for p in problems), problems
 
 
 def test_a_missing_centerline_says_which_track(tmp_path):
@@ -113,9 +161,11 @@ def test_too_few_points_is_reported(tmp_path):
     assert any("centerline points" in p for p in problems), problems
 
 
-def test_missing_spawn_points_is_reported(tmp_path):
-    track = make_track(write_csv(tmp_path / "c.csv", circle_points()), spawn_points=[])
-    assert any("spawn points" in p for p in track.validate()), track.validate()
+def test_a_track_says_nothing_about_where_cars_start(tmp_path):
+    """Spawning is the team's business, so it is not a property of the track."""
+    track = make_track(write_csv(tmp_path / "c.csv", circle_points()))
+    assert not hasattr(track.cfg, "spawn_points")
+    assert track.validate() == []
 
 
 # ── Derived quantities ────────────────────────────────────────────────────

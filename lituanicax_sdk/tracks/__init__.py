@@ -1,9 +1,11 @@
 """The official tracks, and the registry your own tracks go in.
 
-The official tracks are locked: their geometry, spawn points and start/finish
-line are fixed so that a lap time on one means the same thing for everyone.
+The official tracks are locked: their geometry and start/finish line are fixed
+so that a lap time on one means the same thing for everyone. Where cars *start*
+is not part of a track — that is your curriculum, and it lives with your spawn
+manager in ``team_solution``.
 
-Your own tracks are not. Register as many as you like and train on them::
+Your own tracks are not locked. Register as many as you like and train on them::
 
     from lituanicax_sdk.tracks import register, TrackCfg
 
@@ -12,7 +14,6 @@ Your own tracks are not. Register as many as you like and train on them::
         walls_usd="team_solution/tracks/my_walls.usdc",
         surface_usd="team_solution/tracks/my_surface.usdc",
         centerline_csv="team_solution/tracks/my_line.csv",
-        spawn_points=[(0.0, 0.0, 90.0)],
     ))
 
 Then set ``cfg.track = get("my_track")``. Call ``Track(cfg).validate()`` on a
@@ -39,15 +40,10 @@ OFFICIAL = TrackCfg(
     centerline_csv=str(_HERE / "official" / "centerline.csv"),
     # The track mesh is modelled 1 / 0.85 too large.
     mesh_scale=0.85,
-    # Blender to Isaac Sim, for the centerline and the spawn points alike.
-    centerline_scale=(-1.15 * 0.85, -1.15 * 0.85),
-    spawn_points=[
-        (0.756, 5.0, 20.8),
-        (3.91, 3.31, -156.0),
-        (3.62, 1.97, -154.48),
-        (-5.46, 3.7, 0.0),
-        (-3.6, 4.7, -217.86),
-    ],
+    # Blender to Isaac Sim. The centerline gets the same scale as the mesh it
+    # describes — measured against the walls this puts it 0.351 m from either
+    # side the whole way round, on a track 0.70 m wide.
+    centerline_scale=(-0.85, -0.85),
     start_finish_index=0,
     lap_gate_window_m=2.0,
     corner_curvature_threshold=0.5,

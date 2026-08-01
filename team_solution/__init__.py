@@ -12,7 +12,7 @@ which is what ``train.py`` and ``play.py`` (both in here) use by default.
   and register them.
 
 The car, the physics and the lap clock come from ``lituanicax_sdk/`` and are
-the same for every team — see ``docs/SDK.md``.
+the same for every team — see ``README.md``.
 """
 
 import gymnasium as gym

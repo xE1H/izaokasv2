@@ -1,26 +1,35 @@
 name: SDK guard
 
 # Two checks, both cheap:
-#   1. the SDK is untouched — it defines the car and the lap clock, so a change
-#      here means this branch's lap times cannot be compared with anyone else's;
+#   1. the SDK matches the official one — it defines the car and the lap clock,
+#      so a change here means this branch's lap times cannot be compared with
+#      other teams';
 #   2. the tests still pass, which needs no GPU and no Isaac Sim.
 
 on: [push, pull_request]
 
 jobs:
   sdk-unchanged:
+    # The baseline is upstream, so this job would fail on every commit that
+    # develops the SDK.  Run it only in a team's own clone of the repository.
+    if: github.repository != 'MCiuzelis/LituanicaX_IsaacSimChallenge'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - name: Check lituanicax_sdk/ is unmodified
+      - name: Check lituanicax_sdk/ matches upstream
         run: |
-          base="${{ github.event.pull_request.base.sha || github.event.before }}"
-          if [ -z "$base" ] || [ "$base" = "0000000000000000000000000000000000000000" ]; then
-            echo "No base commit to compare against; skipping."
-            exit 0
-          fi
+          git remote add upstream https://github.com/MCiuzelis/LituanicaX_IsaacSimChallenge.git
+          git fetch --quiet upstream main
+
+          # Compare against the point this branch left upstream, not against
+          # upstream's tip: a branch that is merely out of date has not
+          # modified anything.  (Being out of date is a separate concern —
+          # lituanicax_sdk/manifest.json records which SDK a lap time was set
+          # under.)
+          base=$(git merge-base upstream/main HEAD || echo upstream/main)
+
           changed=$(git diff --name-only "$base" HEAD -- lituanicax_sdk/)
           if [ -n "$changed" ]; then
             echo "::error::The SDK was modified. Lap times from this branch are"
@@ -28,7 +37,7 @@ jobs:
             echo "$changed"
             exit 1
           fi
-          echo "SDK unchanged."
+          echo "SDK unchanged (baseline $base)."
 
   tests:
     runs-on: ubuntu-latest

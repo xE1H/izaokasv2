@@ -583,24 +583,31 @@ script.
 Every `benchmark` run that produces a lap publishes it. Three things go up:
 **your team name, the lap time, and the SDK's fingerprint.**
 
+The board is at **<https://isaacleaderboard.netlify.app/>**. Tell the SDK who
+you are, once:
+
 ```bash
 export LITUANICAX_TEAM="Wingless Wonders"
-export LITUANICAX_TOKEN="…"           # handed out with your team name
 benchmark --headless
 ```
 
 ```
 [submit] P3   15.200 s   a personal best
-[submit] https://lituanicax.netlify.app/
+[submit] https://isaacleaderboard.netlify.app/
 ```
 
-Put the two values in your shell profile once and forget about them, or write
-them to `.lituanicax.json` in the project root — it is gitignored, because the
-token is what proves a lap time is yours:
+Put that in your shell profile and forget about it, or write it to
+`.lituanicax.json` in the project root (gitignored, so a fork does not carry
+your name to somebody else):
 
 ```json
-{"team": "Wingless Wonders", "token": "…"}
+{"team": "Wingless Wonders"}
 ```
+
+There is no password, and there is no sign-up: the first lap you publish
+creates your team. Nothing is gained by submitting under someone else's name —
+a lap slower than theirs does not move them, and a lap faster than theirs is
+one you want your own name on.
 
 **The fingerprint is what makes the board mean anything.** The site knows which
 SDK the competition is being run on, and ranks a lap only if the fingerprint
@@ -618,10 +625,10 @@ gates on whatever `git pull` gives you.
 The board shows one row per team — that team's fastest ranked lap — sortable by
 lap time or by when it was set.
 
-Publishing cannot cost you a run. No network, no token, board down: the score
-is still printed and still written to `submission.json`, and one line says it
-was not sent. Nothing here retries and nothing here raises. `--no-submit` scores
-a policy without publishing it, and `--team NAME` overrides the configured name
+Publishing cannot cost you a run. No network, no team name, board down: the
+score is still printed and still written to `submission.json`, and one line says
+it was not sent. Nothing here retries and nothing here raises. `--no-submit`
+scores a policy without publishing it, and `--team NAME` overrides the name
 for one run.
 
 ---
@@ -837,11 +844,10 @@ completing a lap. Watch it with `play` first; if it drives fine there but not
 under `benchmark`, remember that the benchmark starts at (0, 0) — a pose your
 training may never visit unless you keep a spawn point there.
 
-**`[submit] not published`.** The line after it says which of the three it is:
-no credentials (set `LITUANICAX_TEAM` and `LITUANICAX_TOKEN`), a token the
-board does not recognise, or a board it could not reach. The lap is not lost —
-it is in `submission.json` — so fix the cause and rerun, or ask an organiser to
-add it by hand.
+**`[submit] not published`.** The rest of the line says why: usually no team
+name (set `LITUANICAX_TEAM`) or a board it could not reach. The lap is not lost
+— it is in `submission.json` — so fix the cause and rerun, or ask an organiser
+to add it by hand.
 
 **The lap was sent but not ranked.** The fingerprint printed by `benchmark`
 does not match the one the board is gating on. Either you have edited

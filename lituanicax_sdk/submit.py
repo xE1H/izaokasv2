@@ -7,14 +7,18 @@ fingerprint is the official one. A team running a modified SDK still gets a
 row in the audit log; it just does not get a place on the board, which is the
 same rule :func:`~lituanicax_sdk._locked.verify_integrity` states locally.
 
-Configuration comes from the environment first, then from a ``.lituanicax.json``
-next to ``logs/``::
+All the board needs is your team name, from the environment or from a
+``.lituanicax.json`` next to ``logs/``::
 
     export LITUANICAX_TEAM="Wingless Wonders"
-    export LITUANICAX_TOKEN="…"          # handed out with your team name
 
-    # or, once, in .lituanicax.json (gitignored — it holds your token)
-    {"team": "Wingless Wonders", "token": "…"}
+    # or, once, in .lituanicax.json
+    {"team": "Wingless Wonders"}
+
+There is no password, and the name is taken at face value. Nothing is gained by
+using someone else's: a lap slower than theirs does not move them, and a lap
+faster than theirs is one you want your own name on. What the board does check
+is the SDK, which is the only claim worth checking.
 
 Publishing is best-effort and deliberately impossible to fail a run with: a
 laptop with no network still scores a lap, it just prints that it could not
@@ -38,10 +42,11 @@ from pathlib import Path
 from ._locked import sdk_fingerprint
 
 #: Where results go unless ``LITUANICAX_LEADERBOARD_URL`` says otherwise.
-DEFAULT_LEADERBOARD_URL = "https://lituanicax.netlify.app"
+DEFAULT_LEADERBOARD_URL = "https://isaacleaderboard.netlify.app"
 
-#: The file, next to ``logs/``, that can hold the team name and token instead
-#: of the environment. It holds a secret, so it is gitignored.
+#: The file, next to ``logs/``, that can hold the team name instead of the
+#: environment. Gitignored, so a fork does not carry one team's name to the
+#: next.
 CONFIG_FILENAME = ".lituanicax.json"
 
 #: Long enough for a cold serverless function to wake up, short enough that a
@@ -62,11 +67,10 @@ class SubmissionError(RuntimeError):
 
 
 @dataclass(frozen=True)
-class Credentials:
+class Submitter:
     """Who is submitting, and where to."""
 
     team: str
-    token: str
     url: str
 
     @property
@@ -116,39 +120,33 @@ def _read_config_file() -> dict:
     return loaded
 
 
-def load_credentials(team: str | None = None) -> Credentials:
-    """Resolve team, token and URL from the environment and the config file.
+def load_submitter(team: str | None = None) -> Submitter:
+    """Resolve the team name and the board's URL.
 
     Args:
         team: overrides both sources, for ``benchmark --team``.
 
     Raises:
-        SubmissionError: if the team name or the token is missing. The caller
-            turns that into a printed hint, not a crash.
+        SubmissionError: if there is no team name. The caller turns that into a
+            printed hint, not a crash.
     """
     config = _read_config_file()
 
-    resolved_team = team or os.environ.get("LITUANICAX_TEAM") or config.get("team")
-    token = os.environ.get("LITUANICAX_TOKEN") or config.get("token")
+    resolved = team or os.environ.get("LITUANICAX_TEAM") or config.get("team")
     url = (
         os.environ.get("LITUANICAX_LEADERBOARD_URL")
         or config.get("url")
         or DEFAULT_LEADERBOARD_URL
     )
 
-    missing = [
-        name
-        for name, value in (("team name", resolved_team), ("token", token))
-        if not value
-    ]
-    if missing:
+    if not resolved or not str(resolved).strip():
         raise SubmissionError(
-            f"no {' and no '.join(missing)}. Set LITUANICAX_TEAM and "
-            f"LITUANICAX_TOKEN, or write {CONFIG_FILENAME} in the project root:\n"
-            '    {"team": "Your Team", "token": "…"}'
+            "no team name. Set LITUANICAX_TEAM, pass --team, or write "
+            f"{CONFIG_FILENAME} in the project root:\n"
+            '    {"team": "Your Team"}'
         )
 
-    return Credentials(team=str(resolved_team), token=str(token), url=str(url))
+    return Submitter(team=str(resolved).strip(), url=str(url))
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -182,19 +180,18 @@ def build_payload(report: dict, team: str) -> dict:
     }
 
 
-def _post(credentials: Credentials, payload: dict) -> dict:
+def _post(submitter: Submitter, payload: dict) -> dict:
     """POST the payload and return the decoded response.
 
     Raises:
         SubmissionError: for anything that is not a 2xx with a JSON body.
     """
     request = urllib.request.Request(
-        credentials.endpoint,
+        submitter.endpoint,
         data=json.dumps(payload).encode(),
         method="POST",
         headers={
             "Content-Type": "application/json",
-            "X-Team-Token": credentials.token,
             "User-Agent": f"lituanicax-sdk/{CLIENT_VERSION}",
         },
     )
@@ -207,15 +204,13 @@ def _post(credentials: Credentials, payload: dict) -> dict:
         # explanation is the useful half of the error.
         raise SubmissionError(_http_error_message(exc)) from exc
     except urllib.error.URLError as exc:
-        raise SubmissionError(
-            f"could not reach {credentials.url}: {exc.reason}"
-        ) from exc
+        raise SubmissionError(f"could not reach {submitter.url}: {exc.reason}") from exc
     except TimeoutError as exc:
         raise SubmissionError(
-            f"{credentials.url} did not answer within {TIMEOUT_S:g}s"
+            f"{submitter.url} did not answer within {TIMEOUT_S:g}s"
         ) from exc
     except OSError as exc:
-        raise SubmissionError(f"could not reach {credentials.url}: {exc}") from exc
+        raise SubmissionError(f"could not reach {submitter.url}: {exc}") from exc
 
     try:
         decoded = json.loads(body)
@@ -236,8 +231,6 @@ def _http_error_message(exc: urllib.error.HTTPError) -> str:
     except Exception:  # noqa: BLE001 — any unreadable body falls back below
         described = None
 
-    if exc.code == 401 and not described:
-        described = "the token was not accepted. Check LITUANICAX_TOKEN."
     return f"HTTP {exc.code}: {described or exc.reason}"
 
 
@@ -253,9 +246,9 @@ def submit(report: dict, *, team: str | None = None) -> SubmissionOutcome:
         What happened, for :func:`print_outcome`.
     """
     try:
-        credentials = load_credentials(team)
-        payload = build_payload(report, credentials.team)
-        response = _post(credentials, payload)
+        submitter = load_submitter(team)
+        payload = build_payload(report, submitter.team)
+        response = _post(submitter, payload)
     except SubmissionError as exc:
         return SubmissionOutcome(sent=False, ranked=False, message=str(exc))
 

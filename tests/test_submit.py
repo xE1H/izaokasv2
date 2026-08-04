@@ -17,10 +17,10 @@ import pytest
 from lituanicax_sdk import submit as submit_module
 from lituanicax_sdk._locked import sdk_fingerprint
 from lituanicax_sdk.submit import (
-    Credentials,
     SubmissionError,
+    Submitter,
     build_payload,
-    load_credentials,
+    load_submitter,
     print_outcome,
     submit,
 )
@@ -131,73 +131,79 @@ def report():
 
 @pytest.fixture
 def configured(monkeypatch, board, tmp_path):
-    """A team with credentials, and no stray .lituanicax.json in the way."""
+    """A named team, and no stray .lituanicax.json in the way."""
     monkeypatch.setenv("LITUANICAX_TEAM", "Wingless Wonders")
-    monkeypatch.setenv("LITUANICAX_TOKEN", "secret-token")
     monkeypatch.setenv("LITUANICAX_LEADERBOARD_URL", board.url)
     monkeypatch.setattr(submit_module, "_config_file", lambda: tmp_path / "absent.json")
     return board
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-#  Credentials
+#  Who is submitting, and where to
 # ═══════════════════════════════════════════════════════════════════════════
 
 
-def test_credentials_come_from_the_environment(configured, board):
-    credentials = load_credentials()
-    assert credentials.team == "Wingless Wonders"
-    assert credentials.token == "secret-token"
-    assert credentials.endpoint == board.url + "/api/submissions"
+def test_the_team_name_comes_from_the_environment(configured, board):
+    submitter = load_submitter()
+    assert submitter.team == "Wingless Wonders"
+    assert submitter.endpoint == board.url + "/api/submissions"
 
 
-def test_credentials_can_come_from_the_config_file(monkeypatch, tmp_path):
+def test_the_team_name_can_come_from_the_config_file(monkeypatch, tmp_path):
     monkeypatch.delenv("LITUANICAX_TEAM", raising=False)
-    monkeypatch.delenv("LITUANICAX_TOKEN", raising=False)
     monkeypatch.delenv("LITUANICAX_LEADERBOARD_URL", raising=False)
     config = tmp_path / ".lituanicax.json"
-    config.write_text(
-        json.dumps({"team": "Filed", "token": "t", "url": "https://board.example"})
-    )
+    config.write_text(json.dumps({"team": "Filed", "url": "https://board.example"}))
     monkeypatch.setattr(submit_module, "_config_file", lambda: config)
 
-    credentials = load_credentials()
-    assert (credentials.team, credentials.token) == ("Filed", "t")
-    assert credentials.endpoint == "https://board.example/api/submissions"
+    submitter = load_submitter()
+    assert submitter.team == "Filed"
+    assert submitter.endpoint == "https://board.example/api/submissions"
 
 
 def test_the_environment_wins_over_the_config_file(monkeypatch, tmp_path):
     config = tmp_path / ".lituanicax.json"
-    config.write_text(json.dumps({"team": "Filed", "token": "filed"}))
+    config.write_text(json.dumps({"team": "Filed"}))
     monkeypatch.setattr(submit_module, "_config_file", lambda: config)
     monkeypatch.setenv("LITUANICAX_TEAM", "Env")
-    monkeypatch.setenv("LITUANICAX_TOKEN", "env")
 
-    assert load_credentials().team == "Env"
+    assert load_submitter().team == "Env"
 
 
 def test_an_explicit_team_wins_over_both(configured):
-    assert load_credentials("Overridden").team == "Overridden"
+    assert load_submitter("Overridden").team == "Overridden"
 
 
-def test_the_default_url_is_used_when_nothing_says_otherwise(monkeypatch, tmp_path):
+def test_the_default_url_is_the_official_board(monkeypatch, tmp_path):
     monkeypatch.delenv("LITUANICAX_LEADERBOARD_URL", raising=False)
     monkeypatch.setenv("LITUANICAX_TEAM", "T")
-    monkeypatch.setenv("LITUANICAX_TOKEN", "t")
     monkeypatch.setattr(submit_module, "_config_file", lambda: tmp_path / "absent.json")
 
-    assert load_credentials().url == submit_module.DEFAULT_LEADERBOARD_URL
+    assert load_submitter().url == submit_module.DEFAULT_LEADERBOARD_URL
 
 
-def test_missing_credentials_explain_what_to_set(monkeypatch, tmp_path):
+def test_a_missing_team_name_explains_what_to_set(monkeypatch, tmp_path):
     monkeypatch.delenv("LITUANICAX_TEAM", raising=False)
-    monkeypatch.delenv("LITUANICAX_TOKEN", raising=False)
     monkeypatch.setattr(submit_module, "_config_file", lambda: tmp_path / "absent.json")
 
-    with pytest.raises(SubmissionError) as caught:
-        load_credentials()
-    message = str(caught.value)
-    assert "LITUANICAX_TEAM" in message and "LITUANICAX_TOKEN" in message
+    with pytest.raises(SubmissionError, match="LITUANICAX_TEAM"):
+        load_submitter()
+
+
+def test_a_blank_team_name_is_no_team_name(monkeypatch, tmp_path):
+    monkeypatch.setenv("LITUANICAX_TEAM", "   ")
+    monkeypatch.setattr(submit_module, "_config_file", lambda: tmp_path / "absent.json")
+
+    with pytest.raises(SubmissionError, match="LITUANICAX_TEAM"):
+        load_submitter()
+
+
+def test_a_padded_team_name_is_trimmed(monkeypatch, tmp_path):
+    """So " Slipstream " and "Slipstream" are one team on the board, not two."""
+    monkeypatch.setenv("LITUANICAX_TEAM", "  Slipstream  ")
+    monkeypatch.setattr(submit_module, "_config_file", lambda: tmp_path / "absent.json")
+
+    assert load_submitter().team == "Slipstream"
 
 
 def test_an_unreadable_config_file_is_reported_not_ignored(monkeypatch, tmp_path):
@@ -206,7 +212,7 @@ def test_an_unreadable_config_file_is_reported_not_ignored(monkeypatch, tmp_path
     monkeypatch.setattr(submit_module, "_config_file", lambda: config)
 
     with pytest.raises(SubmissionError):
-        load_credentials()
+        load_submitter()
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -254,14 +260,15 @@ def test_a_valid_lap_is_sent_and_ranked(configured, report, board):
     assert sent["sdk_fingerprint"] == FINGERPRINT
 
 
-def test_the_token_travels_in_the_header_not_the_body(configured, report, board):
+def test_the_team_name_is_the_whole_of_the_identity(configured, report, board):
+    """There is no password; the name in the body is what the board goes on."""
     submit(report)
-    headers = board.requests[0]["headers"]
+    request = board.requests[0]
 
-    assert headers["X-Team-Token"] == "secret-token"
-    assert headers["Content-Type"] == "application/json"
-    assert headers["User-Agent"].startswith("lituanicax-sdk/")
-    assert "token" not in board.requests[0]["payload"]
+    assert request["payload"]["team"] == "Wingless Wonders"
+    assert not [name for name in request["headers"] if "token" in name.lower()]
+    assert request["headers"]["Content-Type"] == "application/json"
+    assert request["headers"]["User-Agent"].startswith("lituanicax-sdk/")
 
 
 def test_the_context_the_board_shows_is_included(configured, report, board):
@@ -292,11 +299,10 @@ def test_a_stale_sdk_is_not_ranked(monkeypatch, configured, report, board):
     assert outcome.response["official_sdk_fingerprint"] == "f" * 12
 
 
-def test_a_rejected_token_does_not_raise(monkeypatch, tmp_path, report):
-    board = FakeBoard(status=401, body={"accepted": False, "error": "unknown team"})
+def test_a_refusal_does_not_raise(monkeypatch, tmp_path, report):
+    board = FakeBoard(status=400, body={"accepted": False, "error": "team is required"})
     try:
         monkeypatch.setenv("LITUANICAX_TEAM", "T")
-        monkeypatch.setenv("LITUANICAX_TOKEN", "wrong")
         monkeypatch.setenv("LITUANICAX_LEADERBOARD_URL", board.url)
         monkeypatch.setattr(
             submit_module, "_config_file", lambda: tmp_path / "absent.json"
@@ -307,12 +313,11 @@ def test_a_rejected_token_does_not_raise(monkeypatch, tmp_path, report):
         board.close()
 
     assert not outcome.sent and not outcome.ranked
-    assert "unknown team" in outcome.message
+    assert "team is required" in outcome.message
 
 
 def test_an_unreachable_board_does_not_raise(monkeypatch, tmp_path, report):
     monkeypatch.setenv("LITUANICAX_TEAM", "T")
-    monkeypatch.setenv("LITUANICAX_TOKEN", "t")
     # Port 1 is reserved and nothing listens on it.
     monkeypatch.setenv("LITUANICAX_LEADERBOARD_URL", "http://127.0.0.1:1")
     monkeypatch.setattr(submit_module, "_config_file", lambda: tmp_path / "absent.json")
@@ -325,7 +330,6 @@ def test_an_unreachable_board_does_not_raise(monkeypatch, tmp_path, report):
 
 def test_missing_credentials_do_not_raise_either(monkeypatch, tmp_path, report):
     monkeypatch.delenv("LITUANICAX_TEAM", raising=False)
-    monkeypatch.delenv("LITUANICAX_TOKEN", raising=False)
     monkeypatch.setattr(submit_module, "_config_file", lambda: tmp_path / "absent.json")
 
     outcome = submit(report)
@@ -346,7 +350,6 @@ def test_nonsense_from_the_board_is_survivable(monkeypatch, tmp_path, report):
     board = FakeBoard()
     try:
         monkeypatch.setenv("LITUANICAX_TEAM", "T")
-        monkeypatch.setenv("LITUANICAX_TOKEN", "t")
         monkeypatch.setenv("LITUANICAX_LEADERBOARD_URL", board.url)
         monkeypatch.setattr(
             submit_module, "_config_file", lambda: tmp_path / "absent.json"
@@ -388,7 +391,6 @@ def test_an_unranked_lap_prints_both_fingerprints(configured, report, capsys):
 
 def test_a_failure_says_it_was_not_published(monkeypatch, tmp_path, report, capsys):
     monkeypatch.delenv("LITUANICAX_TEAM", raising=False)
-    monkeypatch.delenv("LITUANICAX_TOKEN", raising=False)
     monkeypatch.setattr(submit_module, "_config_file", lambda: tmp_path / "absent.json")
 
     print_outcome(submit(report))
@@ -397,5 +399,7 @@ def test_a_failure_says_it_was_not_published(monkeypatch, tmp_path, report, caps
 
 
 def test_the_endpoint_is_built_without_a_double_slash():
-    credentials = Credentials(team="T", token="t", url="https://board.example/")
-    assert credentials.endpoint == "https://board.example/api/submissions"
+    assert (
+        Submitter(team="T", url="https://board.example/").endpoint
+        == "https://board.example/api/submissions"
+    )

@@ -24,8 +24,8 @@ build/
 # Hydra's own output tree — train.py disables it, but older runs left one
 outputs/
 
-# Your leaderboard team name and token. Never commit this: the token is what
-# proves a lap time is yours.
+# Your leaderboard team name. Local to your clone, so a fork does not carry
+# one team's name to the next.
 .lituanicax.json
 
 # Coding-agent scratch files and directories

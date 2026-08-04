@@ -52,8 +52,8 @@ The jitter is seeded (``--seed``), so a rerun repeats the same ten starts.
 **The lap is published.** When the run produces a time it is sent to the
 official leaderboard — team name, lap time and the SDK's fingerprint — and the
 board ranks it only if that fingerprint matches the SDK everyone else is
-racing. See :mod:`lituanicax_sdk.submit` for the two environment variables that
-need setting, and pass ``--no-submit`` for a run you would rather keep to
+racing. Set ``LITUANICAX_TEAM`` so the board knows whose lap it is — see
+:mod:`lituanicax_sdk.submit` — and pass ``--no-submit`` for a run you keep to
 yourself. Publishing cannot fail a run: a board that is unreachable costs you a
 printed line and nothing else.
 
@@ -471,7 +471,7 @@ def publish(report: dict) -> None:
 
     Best-effort by design: :func:`lituanicax_sdk.submit.submit` reports a
     failure rather than raising one, so a board that is down, a laptop with no
-    network or a team that has not set its token all still get their score
+    network or a team that has not set its name all still get their score
     printed and written to ``submission.json``.
     """
     if args_cli.no_submit:

@@ -116,7 +116,7 @@ class RaceEnvCfg(DirectRLEnvCfg):
     #: hits a wall freezes on the spot.
     #:
     #: Off while you train — what ends an episode is your decision there. The
-    #: evaluator turns it on, so that every team's cars fail for the same
+    #: benchmark turns it on, so that every team's cars fail for the same
     #: reasons and a lap time compares like with like.
     enforce_official_rules: bool = False
 
@@ -124,7 +124,7 @@ class RaceEnvCfg(DirectRLEnvCfg):
     #: keep driving (and respawning) once it has banked a time.
     #:
     #: Off while you train, where running laps is itself the learning signal.
-    #: The evaluator turns it on, so an attempt is exactly one out-lap and one
+    #: The benchmark turns it on, so an attempt is exactly one out-lap and one
     #: timed lap, never more.
     terminate_on_lap: bool = False
 
@@ -133,7 +133,7 @@ class RaceEnvCfg(DirectRLEnvCfg):
     #:
     #: Off while you train — whether a stalled car is worth terminating is a
     #: training decision (the baseline solution terminates on it). The
-    #: evaluator turns it on: a car pinned against a wall can sit there for the
+    #: benchmark turns it on: a car pinned against a wall can sit there for the
     #: whole attempt window while its centre stays just outside the crash
     #: radius, and a failed attempt should not take 90 seconds to fail.
     official_stall_rule: bool = False
@@ -193,7 +193,7 @@ class RaceEnv(DirectRLEnv, metaclass=SealedMeta):
             self.num_envs, dtype=torch.bool, device=self.device
         )
 
-        # Consecutive slow steps per car, for the evaluator's stall rule.
+        # Consecutive slow steps per car, for the benchmark's stall rule.
         self._stall_steps = torch.zeros(
             self.num_envs, dtype=torch.long, device=self.device
         )
@@ -241,7 +241,7 @@ class RaceEnv(DirectRLEnv, metaclass=SealedMeta):
         raise NotImplementedError(
             f"{type(self).__name__} must implement compute_observations(car). "
             "The SDK simulates the car; what the policy sees is yours to decide. "
-            "See README.md and team_solution/env.py."
+            "See README.md and teamcode/env.py."
         )
 
     def compute_reward(self, car: CarState) -> torch.Tensor:
@@ -256,7 +256,7 @@ class RaceEnv(DirectRLEnv, metaclass=SealedMeta):
         """
         raise NotImplementedError(
             f"{type(self).__name__} must implement compute_reward(car). "
-            "See README.md and team_solution/env.py."
+            "See README.md and teamcode/env.py."
         )
 
     def compute_terminations(self, car: CarState) -> torch.Tensor:
@@ -561,7 +561,7 @@ class RaceEnv(DirectRLEnv, metaclass=SealedMeta):
         While training, your terminations are the only thing that ends an
         episode early. During a measured run they are *replaced* by the crash
         rules — not added to — so that every team's cars fail for exactly the
-        same reasons and a lap time compares like with like. The evaluator's
+        same reasons and a lap time compares like with like. The benchmark's
         two extra options also apply then: ``official_stall_rule`` cuts off a
         car that stops making progress, and ``terminate_on_lap`` ends the
         episode the step a valid lap is recorded.
@@ -587,7 +587,7 @@ class RaceEnv(DirectRLEnv, metaclass=SealedMeta):
         self.lap_timer.update(car.pos_xy, car.nearest_idx, self.episode_length_buf)
 
         # During a measured run a valid lap is a finished attempt: the clock
-        # has recorded it, so the car is done. The evaluator alone turns this
+        # has recorded it, so the car is done. The benchmark alone turns this
         # on, so training runs keep lapping.
         if self.cfg.enforce_official_rules and self.cfg.terminate_on_lap:
             failed |= self.lap_timer.just_finished

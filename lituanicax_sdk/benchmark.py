@@ -1,13 +1,14 @@
 """The official score: ten cars, one lap each, timed from the moment they are
 put down, and the fastest lap counts.
 
-    evaluate                                      # newest checkpoint
-    evaluate --headless                           # no window, quicker for it
-    evaluate --checkpoint logs/<run>/model_1000.pt
-    evaluate --spawn 3.9 3.3 --spawn-yaw -156     # start somewhere else
-    evaluate --agents 1 --spawn-jitter 0          # one car, exactly straight
+    benchmark                                      # newest checkpoint
+    benchmark --headless                           # no window, quicker for it
+    benchmark --checkpoint logs/<run>/model_1000.pt
+    benchmark --spawn 3.9 3.3 --spawn-yaw -156     # start somewhere else
+    benchmark --agents 1 --spawn-jitter 0          # one car, exactly straight
+    benchmark --no-submit                          # score it, keep it private
 
-    python -m lituanicax_sdk.evaluate --help      # without the helper script
+    python -m lituanicax_sdk.benchmark --help      # without the helper script
 
 This is ``play.py`` with the watching taken out and a stopwatch put in. Ten
 cars are placed on the official track and each drives until
@@ -48,8 +49,16 @@ counts.
 
 The jitter is seeded (``--seed``), so a rerun repeats the same ten starts.
 
+**The lap is published.** When the run produces a time it is sent to the
+official leaderboard — team name, lap time and the SDK's fingerprint — and the
+board ranks it only if that fingerprint matches the SDK everyone else is
+racing. See :mod:`lituanicax_sdk.submit` for the two environment variables that
+need setting, and pass ``--no-submit`` for a run you would rather keep to
+yourself. Publishing cannot fail a run: a board that is unreachable costs you a
+printed line and nothing else.
+
 The one thing this does not take from ``play.py`` is your
-``compute_terminations``: the evaluation runs under
+``compute_terminations``: the benchmark runs under
 :mod:`lituanicax_sdk.rules` instead, so that a team with an aggressive stall
 rule and a team with none are not running different sessions. Your observations
 obviously still are yours — the policy could not run otherwise.
@@ -127,6 +136,17 @@ parser.add_argument(
 parser.add_argument(
     "--out", type=str, default=None, help="Where to write submission.json."
 )
+parser.add_argument(
+    "--team",
+    type=str,
+    default=None,
+    help="Team to publish under (default: $LITUANICAX_TEAM, or .lituanicax.json).",
+)
+parser.add_argument(
+    "--no-submit",
+    action="store_true",
+    help="Score the policy without publishing the result to the leaderboard.",
+)
 AppLauncher.add_app_launcher_args(parser)
 args_cli, hydra_args = parser.parse_known_args()
 
@@ -152,7 +172,7 @@ from isaaclab_rl.rsl_rl import (  # noqa: E402
 from isaaclab_tasks.utils.hydra import hydra_task_config  # noqa: E402
 from rsl_rl.runners import OnPolicyRunner  # noqa: E402
 
-import team_solution  # noqa: F401, E402 — importing registers the task
+import teamcode  # noqa: F401, E402 — importing registers the task
 from lituanicax_sdk import (  # noqa: E402
     RaceEnv,
     RaceEnvCfg,
@@ -162,6 +182,7 @@ from lituanicax_sdk import (  # noqa: E402
 )
 from lituanicax_sdk.runs import find_checkpoint  # noqa: E402
 from lituanicax_sdk.spawn import SpawnManager  # noqa: E402
+from lituanicax_sdk.submit import print_outcome, submit  # noqa: E402
 from lituanicax_sdk.timing import AttemptTimer  # noqa: E402
 
 #: A failed attempt has no lap time.
@@ -177,12 +198,12 @@ def main(env_cfg: DirectRLEnvCfg, agent_cfg: RslRlOnPolicyRunnerCfg):
     sys.stdout.reconfigure(line_buffering=True)
     modified = verify_integrity()
 
-    # ── The evaluation conditions, identical for every team ───────────────
+    # ── The benchmark conditions, identical for every team ───────────────
     # Set here, after Hydra has had the config, so that a command-line override
     # cannot quietly change what is being measured.
     spawn = build_spawn_manager()
     # Hydra hands back whatever the task registered, typed as the Isaac Lab
-    # base; everything the evaluator can score is a RaceEnv, so say so.
+    # base; everything the benchmark can score is a RaceEnv, so say so.
     race_cfg = cast(RaceEnvCfg, env_cfg)
     race_cfg.scene.num_envs = args_cli.agents
     race_cfg.track = tracks.OFFICIAL  # your own tracks are for training
@@ -198,11 +219,11 @@ def main(env_cfg: DirectRLEnvCfg, agent_cfg: RslRlOnPolicyRunnerCfg):
         env_cfg.sim.device = args_cli.device
 
     checkpoint = find_checkpoint(args_cli.checkpoint)
-    print(f"\n[evaluate] policy : {checkpoint}")
-    print(f"[evaluate] track  : {race_cfg.track.name}")
-    print(f"[evaluate] spawn  : {spawn.describe()}")
-    print(f"[evaluate] agents : {args_cli.agents}, one attempt each")
-    print(f"[evaluate] sdk    : {sdk_fingerprint()}")
+    print(f"\n[benchmark] policy : {checkpoint}")
+    print(f"[benchmark] track  : {race_cfg.track.name}")
+    print(f"[benchmark] spawn  : {spawn.describe()}")
+    print(f"[benchmark] agents : {args_cli.agents}, one attempt each")
+    print(f"[benchmark] sdk    : {sdk_fingerprint()}")
 
     env = RslRlVecEnvWrapper(
         cast(DirectRLEnv, gym.make(TASK, cfg=env_cfg, render_mode=None)),
@@ -220,12 +241,12 @@ def main(env_cfg: DirectRLEnvCfg, agent_cfg: RslRlOnPolicyRunnerCfg):
 
     # ── Drive ─────────────────────────────────────────────────────────────
     print(
-        f"[evaluate] lap    : {race.track.track_length:.1f} m back to the line it "
+        f"[benchmark] lap    : {race.track.track_length:.1f} m back to the line it "
         "starts on, timed from the moment the car is put down"
     )
     if race.num_envs > 1:
         print(
-            f"[evaluate] the {race.num_envs} cars start on the same point, so the "
+            f"[benchmark] the {race.num_envs} cars start on the same point, so the "
             "viewer shows them as one until they drive apart."
         )
 
@@ -238,6 +259,7 @@ def main(env_cfg: DirectRLEnvCfg, agent_cfg: RslRlOnPolicyRunnerCfg):
     )
     print_report(report)
     write_report(report, checkpoint)
+    publish(report)
 
     env.close()
 
@@ -441,7 +463,23 @@ def write_report(report: dict, checkpoint) -> None:
     out = args_cli.out or str(checkpoint.parent / "submission.json")
     with open(out, "w") as handle:
         json.dump(report, handle, indent=2)
-    print(f"\n[evaluate] written to {out}")
+    print(f"\n[benchmark] written to {out}")
+
+
+def publish(report: dict) -> None:
+    """Send the lap to the official leaderboard.
+
+    Best-effort by design: :func:`lituanicax_sdk.submit.submit` reports a
+    failure rather than raising one, so a board that is down, a laptop with no
+    network or a team that has not set its token all still get their score
+    printed and written to ``submission.json``.
+    """
+    if args_cli.no_submit:
+        print("[submit] skipped (--no-submit)")
+        return
+
+    outcome = submit(report, team=args_cli.team)
+    print_outcome(outcome)
 
 
 if __name__ == "__main__":

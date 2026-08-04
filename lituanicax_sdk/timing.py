@@ -62,7 +62,7 @@ class AttemptTimer:
     and the attempt is over the moment the car comes back over the line it
     started on.
 
-    Comparability survives because the evaluator puts every team's car on the
+    Comparability survives because the benchmark puts every team's car on the
     same point: the line moves with the spawn, and the spawn is fixed.
 
     The two rules that keep :class:`LapTimer` honest apply here too: the car has

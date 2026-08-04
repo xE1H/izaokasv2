@@ -7,12 +7,12 @@ Every run is one self-contained folder::
     ├── events.out.tfevents.*   TensorBoard data
     ├── params/                 the exact env and PPO config used
     ├── exported/               policy.pt / policy.onnx, written by play.py
-    ├── submission.json         written by the evaluator
+    ├── submission.json         written by the benchmark
     └── videos/                 only if you asked for one
 
-Shared by ``team_solution/train.py``, ``team_solution/play.py`` and the
-evaluator so that all three agree on
-the layout, and so none of them has to reimplement "find the newest checkpoint".
+Shared by ``teamcode/train.py``, ``teamcode/play.py`` and the benchmark so that
+all three agree on the layout, and so none of them has to reimplement "find the
+newest checkpoint".
 """
 
 from __future__ import annotations

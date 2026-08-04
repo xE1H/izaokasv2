@@ -49,4 +49,4 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 
-# Register your tracks here — this module is imported by team_solution/__init__.py.
+# Register your tracks here — this module is imported by teamcode/__init__.py.

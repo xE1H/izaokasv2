@@ -104,7 +104,7 @@ def test_first_crossing_is_an_out_lap_and_is_not_timed(circle_track):
 def test_a_spawn_just_before_the_line_gets_a_timed_lap_one_lap_later(circle_track):
     """The out-lap is the stretch from the spawn to the line, not a whole lap.
 
-    Cars start wherever they are put — the evaluator puts them 17 m before the
+    Cars start wherever they are put — the benchmark puts them 17 m before the
     start/finish line on the official track. An earlier version applied the
     travel rule to the crossing that *starts* the clock as well as to timed
     laps, so that short stretch did not count as reaching the line and every

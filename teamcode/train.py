@@ -4,7 +4,7 @@
     train --num_envs 200 --headless # much faster: no on-screen rendering
     train --resume                  # continue from the newest checkpoint
 
-    python -m team_solution.train --help   # without the helper script
+    python -m teamcode.train --help   # without the helper script
 
 Three flags, and that is all:
 
@@ -13,17 +13,17 @@ Three flags, and that is all:
     --resume       continue from the most recent checkpoint
 
 How *long* it trains, the network size and every other learning setting live in
-``team_solution/ppo_cfg.py``. Any of them can be overridden for a single run
+``teamcode/ppo_cfg.py``. Any of them can be overridden for a single run
 without editing the file — ``train --num_envs 200 agent.max_iterations=200``.
 
 Each run writes everything it produces — checkpoints, TensorBoard data, the
 exact config used — into one folder, ``logs/<timestamp>/``. TensorBoard starts
 automatically and prints its URL.
 
-What the policy sees and what it is paid for is ``team_solution/env.py``. The
+What the policy sees and what it is paid for is ``teamcode/env.py``. The
 car, the physics and the lap clock come from ``lituanicax_sdk/``.
 
-This script lives in ``team_solution/`` rather than at the repository root
+This script lives in ``teamcode/`` rather than at the repository root
 because it is yours: how you train is not something the competition fixes.
 """
 
@@ -88,7 +88,7 @@ from isaaclab_tasks.utils.hydra import hydra_task_config  # noqa: E402
 from rsl_rl.runners import OnPolicyRunner  # noqa: E402
 from rsl_rl.utils import store_code_state  # noqa: E402
 
-import team_solution  # noqa: F401, E402 — importing registers the task
+import teamcode  # noqa: F401, E402 — importing registers the task
 from lituanicax_sdk.runs import find_checkpoint, logs_dir, new_run_dir  # noqa: E402
 
 torch.backends.cuda.matmul.allow_tf32 = True

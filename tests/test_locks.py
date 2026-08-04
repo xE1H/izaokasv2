@@ -190,7 +190,7 @@ def test_the_env_requires_the_team_to_write_the_logic():
         assert name in methods, f"RaceEnv should define {name}"
         body = ast.dump(methods[name])
         assert "NotImplementedError" in body, f"{name} must refuse to guess"
-        assert "team_solution" in body, f"{name} should say where to write it"
+        assert "teamcode" in body, f"{name} should say where to write it"
 
     # Terminations are optional: episodes run to time by default.
     assert "compute_terminations" in methods

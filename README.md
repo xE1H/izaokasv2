@@ -16,7 +16,7 @@ scored.
 ./install.sh                      # one-time setup
 train --num_envs 200 --headless   # train
 play  --num_envs 1                # watch the newest checkpoint drive
-evaluate                          # official score: best of ten laps
+benchmark                         # official score: best of ten laps
 ```
 
 ---
@@ -34,6 +34,7 @@ evaluate                          # official score: best of ten laps
 - [Where cars start](#where-cars-start)
 - [Lap timing](#lap-timing)
 - [The official score](#the-official-score)
+- [The leaderboard](#the-leaderboard)
 - [Training](#training)
 - [Playing a checkpoint](#playing-a-checkpoint)
 - [Runs and logs](#runs-and-logs)
@@ -114,21 +115,21 @@ sudo apt-get install nvidia-driver-570-open
    pulls in the headless one, which has no `imshow`), pins `numpy<2.0.0`
    (Isaac Sim's compiled extensions ship against 1.26) and `setuptools<82.0.0`
    (82 dropped `pkg_resources`, which TensorBoard still imports).
-6. **Helper commands** — writes `train`, `play` and `evaluate` into
+6. **Helper commands** — writes `train`, `play` and `benchmark` into
    `~/.local/bin/`. Each one `cd`s into the project and runs the matching module
    through `uv run`, so they work from any directory. On dual-GPU laptops they
    also set `__NV_PRIME_RENDER_OFFLOAD=1`, which forces Vulkan onto the NVIDIA
    card instead of the Intel iGPU that drives the display.
 
-`train` and `play` live in `team_solution/` because they are yours; `evaluate`
+`train` and `play` live in `teamcode/` because they are yours; `benchmark`
 lives in the SDK because it is the scoring rules, not a project script.
 
 Everything the helpers do, you can do by hand:
 
 ```bash
-uv run python -m team_solution.train --num_envs 200 --headless
-uv run python -m team_solution.play --num_envs 1
-uv run python -m lituanicax_sdk.evaluate --headless
+uv run python -m teamcode.train --num_envs 200 --headless
+uv run python -m teamcode.play --num_envs 1
+uv run python -m lituanicax_sdk.benchmark --headless
 ```
 
 ---
@@ -150,9 +151,10 @@ lituanicax_sdk/    LOCKED. The car, the ground, the physics, the lap clock —
 ├── track.py         tracks;  tracks/ the official one
 ├── spawn.py         where cars start; the default is (0, 0)
 ├── runs.py          where runs live, finding checkpoints
-└── evaluate.py      ★ the official score
+├── submit.py        publishing a lap to the leaderboard
+└── benchmark.py     ★ the official score
 
-team_solution/     YOURS. This is what you edit.
+teamcode/          YOURS. This is what you edit.
 ├── env.py         ★ Start here: what the policy sees, what it is paid for,
 │                    when an episode ends, and where the cars start.
 ├── ppo_cfg.py     PPO settings: network size, learning rate, batch size.
@@ -284,7 +286,7 @@ says so plainly if it does not.
 iteration. Trace each part of your reward: when a policy does something strange,
 the fastest way to find out why is to see which term paid for it.
 
-`team_solution/env.py` is a complete worked example — 23 observations, 7 reward
+`teamcode/env.py` is a complete worked example — 23 observations, 7 reward
 terms, three terminations — that trains as-is and is yours to rewrite.
 
 ### One constraint worth knowing
@@ -346,7 +348,7 @@ would begin with a mirrored view of the track.
 
 ## The baseline solution
 
-Everything in this section is `team_solution/env.py`. None of it is a
+Everything in this section is `teamcode/env.py`. None of it is a
 requirement; it is a worked example that trains.
 
 ### What the policy sees — 23 numbers
@@ -410,7 +412,7 @@ stopped saves samples; ending one when it drifts wide teaches a tighter line and
 may also teach timidity. Your call. The baseline ends on a wall hit, a
 roll-over, and a stall.
 
-While a lap is being **measured** (`evaluate`, or `enforce_official_rules`), the
+While a lap is being **measured** (`benchmark`, or `enforce_official_rules`), the
 SDK's crash rules apply *instead of* yours and a car that hits a wall freezes,
 so every team's cars fail for exactly the same reasons:
 
@@ -441,12 +443,12 @@ Where cars start is **yours**, and it is not a property of the track.
 
 The SDK's default is deliberately the dullest one there is: `SpawnManager` puts
 every car on the **world origin**, facing along the track — one hardcoded point,
-the same one `evaluate` scores from, with no opinion about which corners are
+the same one `benchmark` scores from, with no opinion about which corners are
 worth practising.
 
 `PresetSpawnManager(points=[...])` spreads cars over a list of poses you choose,
 each usable facing either way. The baseline's list is `SPAWN_POINTS` in
-`team_solution/env.py`, in world metres — change it, add to it, or subclass
+`teamcode/env.py`, in world metres — change it, add to it, or subclass
 either manager and set `cfg.spawn_manager` to something else entirely.
 Randomising along the centerline, or starting cars at speed rather than from
 rest, are both reasonable things to try.
@@ -504,7 +506,7 @@ A scored attempt is one car from one known place, so it can do better: the gate
 is the plane through the **spawn point**, and the clock starts the instant the
 car is put down. One lap of driving for one lap of time, with no untimed
 out-lap, and the attempt ends the moment the car comes back over the line it
-started on. Comparability survives because `evaluate` fixes the spawn point for
+started on. Comparability survives because `benchmark` fixes the spawn point for
 everyone.
 
 The arming and travel rules apply here too.
@@ -514,12 +516,12 @@ The arming and travel rules apply here too.
 ## The official score
 
 ```bash
-evaluate                              # ten cars, one timed lap each
-evaluate --headless                   # no window, and quicker for it
-evaluate --checkpoint logs/<run>/model_1000.pt
-evaluate --spawn 3.9 3.3              # start somewhere other than (0, 0)
-evaluate --spawn-yaw 180              # face the other way round the track
-evaluate --agents 1 --spawn-jitter 0  # one car, exactly straight
+benchmark                              # ten cars, one timed lap each
+benchmark --headless                   # no window, and quicker for it
+benchmark --checkpoint logs/<run>/model_1000.pt
+benchmark --spawn 3.9 3.3              # start somewhere other than (0, 0)
+benchmark --spawn-yaw 180              # face the other way round the track
+benchmark --agents 1 --spawn-jitter 0  # one car, exactly straight
 ```
 
 Ten cars each get a **single attempt**: placed on the official track, driving
@@ -542,7 +544,7 @@ really learned the track. On a trained baseline, ±5° of jitter spreads the ten
 laps over more than a second. The jitter is seeded (`--seed`), so a rerun
 repeats the same ten starts.
 
-The evaluation runs under the SDK's own rules and **ignores your
+The benchmark runs under the SDK's own rules and **ignores your
 `compute_terminations`** — otherwise a team with an aggressive stall rule and a
 team with none would be running different sessions. Your observations are still
 your own; the policy could not run otherwise.
@@ -569,10 +571,58 @@ can be traced to the rules it was set under and reproduced.
 ════════════════════════════════════════════════════════
 ```
 
-`evaluate` is `play.py` with the watching taken out and a stopwatch put in: the
+`benchmark` is `play.py` with the watching taken out and a stopwatch put in: the
 same environment, the same loaded checkpoint, the same step loop. It lives in
-`lituanicax_sdk/evaluate.py` because it is the scoring rules, not a project
+`lituanicax_sdk/benchmark.py` because it is the scoring rules, not a project
 script.
+
+---
+
+## The leaderboard
+
+Every `benchmark` run that produces a lap publishes it. Three things go up:
+**your team name, the lap time, and the SDK's fingerprint.**
+
+```bash
+export LITUANICAX_TEAM="Wingless Wonders"
+export LITUANICAX_TOKEN="…"           # handed out with your team name
+benchmark --headless
+```
+
+```
+[submit] P3   15.200 s   a personal best
+[submit] https://lituanicax.netlify.app/
+```
+
+Put the two values in your shell profile once and forget about them, or write
+them to `.lituanicax.json` in the project root — it is gitignored, because the
+token is what proves a lap time is yours:
+
+```json
+{"team": "Wingless Wonders", "token": "…"}
+```
+
+**The fingerprint is what makes the board mean anything.** The site knows which
+SDK the competition is being run on, and ranks a lap only if the fingerprint
+sent with it matches. A modified SDK produces a different fingerprint, so a lap
+set on one is recorded but never ranked — the same rule the local warning from
+`verify_integrity` states, enforced where it counts. If your submission comes
+back unranked and you have not touched `lituanicax_sdk/`, you are on an old
+SDK: pull.
+
+Nobody types that fingerprint in: every push to `lituanicax_sdk/` on upstream
+recomputes it and tells the board
+([`publish-sdk-hash.yml`](.github/workflows/publish-sdk-hash.yml)), so the board
+gates on whatever `git pull` gives you.
+
+The board shows one row per team — that team's fastest ranked lap — sortable by
+lap time or by when it was set.
+
+Publishing cannot cost you a run. No network, no token, board down: the score
+is still printed and still written to `submission.json`, and one line says it
+was not sent. Nothing here retries and nothing here raises. `--no-submit` scores
+a policy without publishing it, and `--team NAME` overrides the configured name
+for one run.
 
 ---
 
@@ -587,10 +637,10 @@ train --num_envs 200 --headless
 `train` has.
 
 How long it trains and every other learning setting lives in
-`team_solution/ppo_cfg.py`. To change one for a single run without editing the
+`teamcode/ppo_cfg.py`. To change one for a single run without editing the
 file, pass it through: `train --num_envs 200 agent.max_iterations=200`.
 
-`team_solution/train.py` starts TensorBoard for you and prints the URL (port
+`teamcode/train.py` starts TensorBoard for you and prints the URL (port
 6006, or the next free one). You can also start it yourself:
 
 ```bash
@@ -612,7 +662,7 @@ Anything you pass to `self.log(...)` shows up too, averaged over the iteration.
 
 ### PPO hyperparameters
 
-All of these live in `team_solution/ppo_cfg.py`, and all of them are yours.
+All of these live in `teamcode/ppo_cfg.py`, and all of them are yours.
 
 | Parameter | Value |
 |-----------|-------|
@@ -650,7 +700,7 @@ recording fails with a confusing error.
 ready to run on the real car. The observation normaliser is baked in, so the
 exported network takes raw observations.
 
-For a lap time, use `evaluate` — that is the official measurement.
+For a lap time, use `benchmark` — that is the official measurement.
 
 ---
 
@@ -667,11 +717,11 @@ logs/2026-08-01_01-05-23/
 ├── params/agent.yaml            the exact PPO config this run used
 ├── git/                         a snapshot of the code at the time
 ├── exported/                    policy.pt + policy.onnx, written by play
-├── submission.json              written by evaluate
+├── submission.json              written by benchmark
 └── videos/                      only if you passed --video
 ```
 
-`train`, `play` and `evaluate` all agree on this layout, and all three default
+`train`, `play` and `benchmark` all agree on this layout, and all three default
 to the most recently modified checkpoint under `logs/`.
 
 ---
@@ -689,9 +739,9 @@ from lituanicax_sdk import TrackCfg
 
 register(TrackCfg(
     name="figure_eight",
-    walls_usd="team_solution/tracks/eight_walls.usdc",
-    surface_usd="team_solution/tracks/eight_surface.usdc",
-    centerline_csv="team_solution/tracks/eight_line.csv",
+    walls_usd="teamcode/tracks/eight_walls.usdc",
+    surface_usd="teamcode/tracks/eight_surface.usdc",
+    centerline_csv="teamcode/tracks/eight_line.csv",
 ))
 
 track = get("figure_eight")
@@ -747,19 +797,25 @@ This is a soft lock: the SDK is in your repository and you can read and edit
 every line of it. It is not there to stop you — it is there so that when you
 change something, you and everyone else know.
 
+The one place it is not soft is [the leaderboard](#the-leaderboard). The
+fingerprint travels with every published lap, and a lap whose fingerprint is
+not the competition's does not get ranked. Editing the SDK to make the car
+faster therefore costs you the board, not just a warning — which is the point:
+the lock is on the score, not on your editor.
+
 ---
 
 ## Tests
 
 The parts of the SDK that do not need Isaac Sim — the lap timer, the attempt
-timer, the track maths, `CarState`, every term, and the locks — are tested on
-the CPU in seconds:
+timer, the track maths, `CarState`, every term, the locks, and the leaderboard
+client against a real socket — are tested on the CPU in seconds:
 
 ```bash
 .venv/bin/python -m pytest tests/ -q
 ```
 
-Worth running after you change anything in `team_solution/`: a term that returns
+Worth running after you change anything in `teamcode/`: a term that returns
 the wrong shape, or an observation that stops being finite at speed, is caught
 here rather than an hour into training.
 
@@ -776,10 +832,20 @@ process without flushing Python's buffers, so anything still in the buffer is
 lost — which is the whole report. Run with `python -u`, or check the artefacts
 (`submission.json`, the run folder) rather than the log.
 
-**`evaluate` reports `NO SUBMISSION` for every agent.** The car is not
+**`benchmark` reports `NO SUBMISSION` for every agent.** The car is not
 completing a lap. Watch it with `play` first; if it drives fine there but not
-under `evaluate`, remember that the evaluator starts at (0, 0) — a pose your
+under `benchmark`, remember that the benchmark starts at (0, 0) — a pose your
 training may never visit unless you keep a spawn point there.
+
+**`[submit] not published`.** The line after it says which of the three it is:
+no credentials (set `LITUANICAX_TEAM` and `LITUANICAX_TOKEN`), a token the
+board does not recognise, or a board it could not reach. The lap is not lost —
+it is in `submission.json` — so fix the cause and rerun, or ask an organiser to
+add it by hand.
+
+**The lap was sent but not ranked.** The fingerprint printed by `benchmark`
+does not match the one the board is gating on. Either you have edited
+`lituanicax_sdk/` — `git status` will say so — or you are behind: `git pull`.
 
 **Cars behave strangely from a standing start.** Every track-relative
 observation depends on which way round the track the car is going. At rest that
@@ -787,4 +853,4 @@ comes from the car's heading rather than its velocity; if you have replaced
 `going_forward`, check that case.
 
 **Out of GPU memory while training.** Lower `--num_envs`. 200 cars fit in 8 GB
-alongside the track; the evaluator's ten always will.
+alongside the track; the benchmark's ten always will.

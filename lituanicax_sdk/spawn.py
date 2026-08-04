@@ -1,11 +1,11 @@
 """Where cars start each episode.
 
 Open. Spawning is a training decision — it is your curriculum — and where your
-cars start is yours to decide in ``team_solution``.
+cars start is yours to decide in ``teamcode``.
 
 The SDK's own default is deliberately the dullest one there is:
 :class:`SpawnManager` puts every car on the **world origin**, facing along the
-track. That is one hardcoded point, the same one the evaluator scores from, and
+track. That is one hardcoded point, the same one the benchmark scores from, and
 it ships no opinion about which corners are worth practising.
 
 Two ways to do better, both from your side of the fence:
@@ -14,7 +14,7 @@ Two ways to do better, both from your side of the fence:
   either direction, with the two directions balanced adaptively: whichever is
   doing *worse* gets more cars. Because each point is used both ways, one
   direction otherwise ends up easier and dominates the learning signal. The
-  baseline solution uses this, and the points live in ``team_solution/env.py``.
+  baseline solution uses this, and the points live in ``teamcode/env.py``.
 * Subclass either one and set ``RaceEnvCfg.spawn_manager``. Randomising along
   the centerline, or starting cars at speed rather than from rest, are both
   reasonable things to try.
@@ -40,7 +40,7 @@ OFF_TRACK_WARNING_M = 1.0
 class SpawnManager:
     """Puts every car on one point, by default the world origin (0, 0).
 
-    The SDK's default and the evaluator's: one fixed pose, so a run measures
+    The SDK's default and the benchmark's: one fixed pose, so a run measures
     the policy rather than the spawn distribution. The point has to be on the
     track — the origin is, on the official one, right on the centerline.
 
@@ -141,7 +141,7 @@ class PresetSpawnManager(SpawnManager):
 
     Yours to configure: the poses are an argument, not a property of the track,
     because which parts of a track are worth practising is a training decision.
-    The baseline solution's list lives in ``team_solution/env.py``.
+    The baseline solution's list lives in ``teamcode/env.py``.
 
     Each point is used in both directions, and the split between them adapts:
     whichever direction is currently surviving less well gets more cars, so one

@@ -3,7 +3,7 @@
 The official tracks are locked: their geometry and start/finish line are fixed
 so that a lap time on one means the same thing for everyone. Where cars *start*
 is not part of a track — that is your curriculum, and it lives with your spawn
-manager in ``team_solution``.
+manager in ``teamcode``.
 
 Your own tracks are not locked. Register as many as you like and train on them::
 
@@ -11,9 +11,9 @@ Your own tracks are not locked. Register as many as you like and train on them::
 
     register(TrackCfg(
         name="my_track",
-        walls_usd="team_solution/tracks/my_walls.usdc",
-        surface_usd="team_solution/tracks/my_surface.usdc",
-        centerline_csv="team_solution/tracks/my_line.csv",
+        walls_usd="teamcode/tracks/my_walls.usdc",
+        surface_usd="teamcode/tracks/my_surface.usdc",
+        centerline_csv="teamcode/tracks/my_line.csv",
     ))
 
 Then set ``cfg.track = get("my_track")``. Call ``Track(cfg).validate()`` on a

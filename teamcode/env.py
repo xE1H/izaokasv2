@@ -72,7 +72,7 @@ STALL_AFTER_STEPS = 45  # but only once the car has had time to get going
 #: The scored attempt always starts at (0, 0), so it is worth keeping a start
 #: there, or near it, among whatever else you train on.
 SPAWN_POINTS = [
-    (0.00, 0.00, 0.0),  # the origin, where `evaluate` starts
+    (0.00, 0.00, 0.0),  # the origin, where `benchmark` starts
     (-0.74, -4.89, 20.8),
     (-3.82, -3.24, -156.0),
     (-3.54, -1.93, -154.5),
@@ -102,7 +102,7 @@ class TeamRaceEnvCfg(RaceEnvCfg):
     episode_length_s: float = 90.0
 
     #: Lap times are only compared on official tracks. Train wherever you like
-    #: — register your own in ``team_solution/tracks/``.
+    #: — register your own in ``teamcode/tracks/``.
     track = OFFICIAL
 
     #: Where cars start, from the list above. Each point is used facing either

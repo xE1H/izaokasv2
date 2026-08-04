@@ -10,7 +10,7 @@ read every one of those values — :class:`~lituanicax_sdk.state.CarState`
 exposes them — you just cannot change them, because a car that differs between
 teams makes lap times meaningless.
 
-**Yours** (``team_solution/``): observations, reward, terminations, spawning,
+**Yours** (``teamcode/``): observations, reward, terminations, spawning,
 your own tracks and objects, and the whole RL side. The SDK ships no rewards
 and no observations, deliberately: one it wrote would be one every team shared.
 
@@ -29,7 +29,7 @@ Getting started::
         def compute_reward(self, car):
             return car.speed_forward / car.max_speed_m_s * car.step_dt
 
-See ``README.md`` for what ``car`` gives you, and ``team_solution/env.py``
+See ``README.md`` for what ``car`` gives you, and ``teamcode/env.py``
 for a complete worked example.
 """
 
@@ -39,10 +39,11 @@ from typing import TYPE_CHECKING
 
 import gymnasium as gym
 
-from . import rules, tracks
+from . import rules, submit, tracks
 from ._locked import LockedParameterError, sdk_fingerprint, verify_integrity
 from .spawn import SpawnManager
 from .state import CarState
+from .submit import SubmissionOutcome
 from .timing import LapTimer
 from .track import Track, TrackCfg
 from .vehicle import TIMING, VEHICLE
@@ -84,6 +85,7 @@ __all__ = [
     "RaceEnv",
     "RaceEnvCfg",
     "SpawnManager",
+    "SubmissionOutcome",
     "TIMING",
     "Track",
     "TrackCfg",
@@ -91,6 +93,7 @@ __all__ = [
     "__version__",
     "rules",
     "sdk_fingerprint",
+    "submit",
     "tracks",
     "verify_integrity",
 ]

@@ -5,7 +5,7 @@
     play --checkpoint logs/<run>/model_1000.pt    # a specific one
     play --video                                  # record a clip instead
 
-    python -m team_solution.play --help           # without the helper script
+    python -m teamcode.play --help           # without the helper script
 
 Three flags:
 
@@ -19,7 +19,7 @@ refuses to produce frames and video recording fails.
 As well as driving, this writes deployment-ready copies of the network into the
 run folder as ``exported/policy.pt`` (TorchScript) and ``exported/policy.onnx``.
 
-For a lap time, use ``evaluate`` — that is the official measurement.
+For a lap time, use ``benchmark`` — that is the official measurement.
 """
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -85,7 +85,7 @@ from isaaclab_rl.rsl_rl import (  # noqa: E402
 from isaaclab_tasks.utils.hydra import hydra_task_config  # noqa: E402
 from rsl_rl.runners import OnPolicyRunner  # noqa: E402
 
-import team_solution  # noqa: F401, E402 — importing registers the task
+import teamcode  # noqa: F401, E402 — importing registers the task
 from lituanicax_sdk import RaceEnv  # noqa: E402
 from lituanicax_sdk.runs import find_checkpoint  # noqa: E402
 
@@ -163,7 +163,7 @@ def main(env_cfg: DirectRLEnvCfg, agent_cfg: RslRlOnPolicyRunnerCfg):
             obs, _, dones, _ = env.step(actions)
             network.reset(dones)
 
-        # Report laps as they are set. `evaluate` is the tool for an official
+        # Report laps as they are set. `benchmark` is the tool for an official
         # time; this is just so you can see what you are watching.
         total = lap_timer.summary()["laps_completed"]
         if total > laps_seen:

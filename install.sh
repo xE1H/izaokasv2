@@ -102,28 +102,32 @@ mkdir -p "${local_bin}"
 PRIME_WRAPPER='if nvidia-smi -L 2>/dev/null | grep -qi intel; then export __NV_PRIME_RENDER_OFFLOAD=1; fi'
 
 # train and play are part of the team's half of the repository, so they live in
-# team_solution/ next to the environment and the PPO config they drive.
+# teamcode/ next to the environment and the PPO config they drive.
 for name in train play; do
     cat > "${local_bin}/${name}" <<SCRIPT
 #!/bin/bash
 PROJECT_DIR="${script_dir}"
 ${PRIME_WRAPPER}
 cd "\$PROJECT_DIR"
-exec uv run python -m team_solution.${name} "\$@"
+exec uv run python -m teamcode.${name} "\$@"
 SCRIPT
     chmod +x "${local_bin}/${name}"
 done
 
-# The official evaluator lives in the SDK, not at the project root — it is the
+# The official benchmark lives in the SDK, not at the project root — it is the
 # scoring rules, not a project script.
-cat > "${local_bin}/evaluate" <<SCRIPT
+cat > "${local_bin}/benchmark" <<SCRIPT
 #!/bin/bash
 PROJECT_DIR="${script_dir}"
 ${PRIME_WRAPPER}
 cd "\$PROJECT_DIR"
-exec uv run python -m lituanicax_sdk.evaluate "\$@"
+exec uv run python -m lituanicax_sdk.benchmark "\$@"
 SCRIPT
-chmod +x "${local_bin}/evaluate"
+chmod +x "${local_bin}/benchmark"
+
+# Before the leaderboard existed the scorer was called `evaluate`. A stale copy
+# would still be first on someone's PATH and would run a module that is gone.
+rm -f "${local_bin}/evaluate"
 
 echo ""
 echo "=============================="
@@ -135,7 +139,7 @@ echo ""
 echo "  Commands:"
 echo "    train --num_envs 200 --headless   # train a policy"
 echo "    play  --num_envs 1                # watch the newest checkpoint"
-echo "    evaluate                          # official score: best of ten laps"
+echo "    benchmark                         # official score: best of ten laps"
 echo ""
-echo "  Edit team_solution/ ; lituanicax_sdk/ is locked (see README.md)."
+echo "  Edit teamcode/ ; lituanicax_sdk/ is locked (see README.md)."
 echo "=============================="

@@ -8,7 +8,7 @@ Cutting a car off when it stops making progress saves samples; cutting it off
 when it drifts wide teaches a tighter line, and may also teach timidity. Your
 call.
 
-When a lap time is being *measured* — the evaluator, or any config with
+When a lap time is being *measured* — the benchmark, or any config with
 ``enforce_official_rules`` set — these replace whatever you defined, so that
 every team's cars fail for exactly the same reasons:
 
@@ -19,7 +19,7 @@ every team's cars fail for exactly the same reasons:
 * **Stall** — the car stays barely moving for too long. This is how a car
   pinned against a wall ends its attempt: its centre can sit just outside the
   crash radius while the body is wedged, so the wall never registers as a
-  crash yet the car cannot move. The evaluator turns this on separately (see
+  crash yet the car cannot move. The benchmark turns this on separately (see
   ``RaceEnvCfg.official_stall_rule``), since whether a stalled car is worth
   terminating is a choice some teams make differently during training.
 

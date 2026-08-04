@@ -28,7 +28,7 @@ class TeamPPORunnerCfg(RslRlOnPolicyRunnerCfg):
 
     # A label for the experiment.  Checkpoints go to logs/<timestamp>/ either
     # way; this only names the run in wandb / neptune, if you enable them.
-    experiment_name: str = "team_solution"
+    experiment_name: str = "teamcode"
 
     # Which observation group feeds which network.  This environment publishes a
     # single group named "policy", and both networks read from it.

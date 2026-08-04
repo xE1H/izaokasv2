@@ -22,7 +22,7 @@ dependencies = [
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["lituanicax_sdk*", "team_solution*"]
+include = ["lituanicax_sdk*", "teamcode*"]
 
 [tool.setuptools.package-data]
 # The car, and the official track's meshes and centerline, ship with the SDK.
@@ -47,12 +47,12 @@ select = ["E", "F", "W", "I"]
 [tool.ruff.lint.per-file-ignores]
 # These three must start Isaac Sim before importing anything that depends on
 # it, so their imports genuinely cannot all sit at the top.
-"team_solution/train.py" = ["E402"]
-"team_solution/play.py" = ["E402"]
-"lituanicax_sdk/evaluate.py" = ["E402"]
+"teamcode/train.py" = ["E402"]
+"teamcode/play.py" = ["E402"]
+"lituanicax_sdk/benchmark.py" = ["E402"]
 
 [tool.ruff.lint.isort]
-known-first-party = ["lituanicax_sdk", "team_solution"]
+known-first-party = ["lituanicax_sdk", "teamcode"]
 
 # ── Type checking (pyright / Pylance) ─────────────────────────────────────
 # Isaac Lab is installed *editable*, which pip implements with an import hook

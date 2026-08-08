@@ -279,10 +279,13 @@ def run_attempts(
     Returns a lap time and an outcome per agent, in agent order, with
     :data:`NO_LAP` where the attempt produced no valid lap.
 
-    Once an agent's attempt is over its result is banked and the agent is
-    ignored for the rest of the session. Isaac Lab respawns a terminated car
-    automatically and it will happily drive again, but that second life is not
-    part of the score: one attempt per agent is the whole point of the format.
+    Once an agent's attempt is over its result is banked, it is retired from
+    the session, and it takes no further part: it stops being driven, it is not
+    put back on the grid, and it is hidden, so what is left on the track is
+    exactly the field still racing. One attempt per agent is the whole point of
+    the format, and it is enforced in the simulation rather than only in the
+    arithmetic — Isaac Lab would otherwise respawn a terminated car and let it
+    drive the track again alongside the agents still on their attempt.
     """
     device, num_envs = race.device, race.num_envs
 
@@ -332,6 +335,11 @@ def run_attempts(
         crashed |= ending & race.reset_terminated
         timed_out |= ending & race.reset_time_outs
         settled |= ending | lapped
+        # One attempt per agent, in the simulation and not just in the score: a
+        # settled car stops being driven and is not put back on the grid. The
+        # environment already knows about the ones that failed; `lapped` is the
+        # half only the clock above can see.
+        race.retire(settled)
 
     outcomes = [
         "lap"

@@ -115,6 +115,11 @@ class RaceEnvCfg(DirectRLEnvCfg):
     #: episode ends *instead of* your ``compute_terminations``, and a car that
     #: hits a wall freezes on the spot.
     #:
+    #: It also makes an attempt a car's only life. A car whose episode has
+    #: ended is not respawned: it stops being driven, and it is hidden, so the
+    #: cars on the track are exactly the cars still being scored. Training does
+    #: the opposite, and should: there a respawn is the next sample.
+    #:
     #: Off while you train — what ends an episode is your decision there. The
     #: benchmark turns it on, so that every team's cars fail for the same
     #: reasons and a lap time compares like with like.
@@ -196,6 +201,13 @@ class RaceEnv(DirectRLEnv, metaclass=SealedMeta):
         # Consecutive slow steps per car, for the benchmark's stall rule.
         self._stall_steps = torch.zeros(
             self.num_envs, dtype=torch.long, device=self.device
+        )
+
+        # Under official rules a car gets one attempt: once its episode has
+        # ended it is left where it stopped rather than respawned. Cleared by
+        # :meth:`reset`, which is what starts a session.
+        self._attempt_over = torch.zeros(
+            self.num_envs, dtype=torch.bool, device=self.device
         )
 
         self.track.load_walls()
@@ -388,6 +400,59 @@ class RaceEnv(DirectRLEnv, metaclass=SealedMeta):
     #  2. Reset — put the cars back on the track
     # ──────────────────────────────────────────────────────────────────────
 
+    @sealed
+    def retire(self, cars: torch.Tensor) -> None:
+        """Take cars out of the session: no more driving, no respawn, hidden.
+
+        The environment knows an attempt is over when the car *fails* — it
+        ends the episode itself. It cannot know when one *succeeds*: the
+        benchmark times attempts against its own gate at the spawn point, not
+        the track's start/finish line, so the caller is the only one holding
+        that fact. This is how it hands it back.
+
+        Without it the cars that get round first — the good ones — carry on
+        lapping while the rest are still on their attempt.
+
+        Args:
+            cars: ``[N]`` boolean, true for each car that is finished.
+
+        Ignored while training: a car that has just done something worth
+        learning from is one you want more samples from, not fewer.
+        """
+        if self.cfg.enforce_official_rules:
+            self._retire(cars)
+
+    def _retire(self, cars: torch.Tensor) -> None:
+        """Mark cars as finished and take them off the screen.
+
+        Idempotent, and it has to be: a retired car goes on reporting done
+        every step, so this is called with the same cars over and over. Only
+        the newly retired ones are hidden, which keeps the USD work to the
+        handful of steps where something actually changes.
+        """
+        newly_done = cars & ~self._attempt_over
+        if not bool(newly_done.any()):
+            return
+        self._attempt_over |= newly_done
+        for env_id in newly_done.nonzero().flatten().tolist():
+            scene.set_car_visible(env_id, False)
+
+    @sealed
+    def reset(self, seed: int | None = None, options: dict | None = None):
+        """Put every car back on the grid and start a fresh set of attempts.
+
+        Under official rules :meth:`_reset_idx` refuses to respawn a car whose
+        attempt is over, so something has to say when a *new* session begins.
+        This is that: the one call that legitimately starts everything again.
+        Inferring it from "every car is being reset at once" would not work —
+        under official rules the cars that have already settled keep reporting
+        done, so the step the last one times out looks exactly the same.
+        """
+        for env_id in self._attempt_over.nonzero().flatten().tolist():
+            scene.set_car_visible(env_id, True)
+        self._attempt_over[:] = False
+        return super().reset(seed=seed, options=options)
+
     def _reset_idx(self, env_ids: Sequence[int] | torch.Tensor | None):
         # Isaac Lab types env_ids as a Sequence[int] but indexes tensors with it
         # throughout, so a tensor is what it actually wants — and what every
@@ -396,6 +461,17 @@ class RaceEnv(DirectRLEnv, metaclass=SealedMeta):
             ids = torch.arange(self.num_envs, device=self.device)
         else:
             ids = torch.as_tensor(env_ids, dtype=torch.long, device=self.device)
+
+        # One attempt per car under official rules. Isaac Lab respawns whatever
+        # terminated, which would put a car that has already crashed back on the
+        # grid to drive the track again while the others are still on their
+        # attempt — scored correctly (the benchmark banks the first result and
+        # ignores the car afterwards) but wrong to watch, and wrong in the
+        # replay. Dropping those cars here leaves them where they stopped.
+        if self.cfg.enforce_official_rules:
+            ids = ids[~self._attempt_over[ids]]
+            if len(ids) == 0:
+                return
 
         # Must happen before super() clears the episode counters.
         self.cfg.spawn_manager.observe_episode_lengths(
@@ -467,10 +543,15 @@ class RaceEnv(DirectRLEnv, metaclass=SealedMeta):
             # A crashed car freezes on the spot, so it cannot scrape its way to
             # a better time. Only during a measured run: while training, what a
             # car does after touching a wall is your business.
+            #
+            # A car whose attempt is over freezes too. It is not respawned, so
+            # without this the policy would go on driving it round the track
+            # from wherever it stopped, for the rest of the session.
+            done_driving = self._wall_touched | self._attempt_over
             torque = torque.clone()
             steer = steer.clone()
-            torque[self._wall_touched] = 0.0
-            steer[self._wall_touched] = 0.0
+            torque[done_driving] = 0.0
+            steer[done_driving] = 0.0
 
         # joint_ids is typed Sequence[int], but it is used as a tensor index —
         # which is what these are, looked up by name once in __init__.
@@ -593,4 +674,12 @@ class RaceEnv(DirectRLEnv, metaclass=SealedMeta):
             failed |= self.lap_timer.just_finished
 
         timed_out = self.episode_length_buf >= self.max_episode_length - 1
+
+        # Retire whoever is out, before Isaac Lab acts on this and tries to
+        # respawn them. Done here rather than in _reset_idx because a car whose
+        # attempt ends on the same step it would be reset has to be caught by
+        # that very reset — _get_dones runs first, so this is in time.
+        if self.cfg.enforce_official_rules:
+            self._retire(failed | timed_out)
+
         return failed, timed_out

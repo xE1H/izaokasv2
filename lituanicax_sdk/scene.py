@@ -147,6 +147,33 @@ def bind_tyre_material(num_envs: int, rubber_prim) -> None:
                 )
 
 
+def set_car_visible(env_id: int, visible: bool) -> None:
+    """Show or hide one car, without touching the physics.
+
+    Used to take a car off the screen when its attempt is over. Visibility is
+    the whole of it: the body is still simulated, still where it stopped, and
+    still frozen — it is simply not drawn. That is enough, because cars in
+    different environments never collide with each other (the scene clones with
+    ``filter_collisions``), so a parked car obstructs nothing.
+
+    Hiding rather than teleporting is deliberate. Moving a retired car would
+    make every world-space number read off it — the position the report quotes,
+    anything a replay reconstructs — a lie about where the attempt ended.
+    """
+    import omni.usd  # pyright: ignore[reportMissingImports]
+    from pxr import UsdGeom  # pyright: ignore[reportMissingImports]
+
+    stage = omni.usd.get_context().get_stage()
+    prim = stage.GetPrimAtPath(f"/World/envs/env_{env_id}/Robot")
+    if not prim.IsValid():
+        return
+    imageable = UsdGeom.Imageable(prim)
+    if visible:
+        imageable.MakeVisible()
+    else:
+        imageable.MakeInvisible()
+
+
 def spawn_extra_entity(scene, name: str, entity_cfg) -> None:
     """Add one of the team's own scene entities.
 

@@ -124,3 +124,22 @@ def test_the_result_is_safe_before_the_deadline_is_armed(module):
     ]
     assert order.index("write_report") < order.index("close_or_bail")
     assert order.index("publish") < order.index("close_or_bail")
+
+
+def method_calls_in(node: ast.AST) -> set[str]:
+    """Every method call made anywhere inside ``node``, by attribute name."""
+    return {
+        child.func.attr
+        for child in ast.walk(node)
+        if isinstance(child, ast.Call) and isinstance(child.func, ast.Attribute)
+    }
+
+
+def test_a_settled_agent_is_retired_from_the_session(module):
+    """One attempt per agent has to hold in the simulation, not just the score.
+
+    Isaac Lab respawns whatever terminated. Without retiring them, a crashed
+    car is put back on the grid and drives the track again beside the agents
+    still on their attempt.
+    """
+    assert "retire" in method_calls_in(function(module, "run_attempts"))

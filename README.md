@@ -156,7 +156,8 @@ lituanicax_sdk/    LOCKED. The car, the ground, the physics, the lap clock —
 
 teamcode/          YOURS. This is what you edit.
 ├── env.py         ★ Start here: what the policy sees, what it is paid for,
-│                    when an episode ends, and where the cars start.
+│                    when an episode ends, and where the cars start. It is
+│                    deliberately the least that works — a floor to beat.
 ├── ppo_cfg.py     PPO settings: network size, learning rate, batch size.
 ├── train.py         Run this to train.  --num_envs  --headless  --resume
 ├── play.py          Watch a policy, and export it as policy.pt / policy.onnx
@@ -230,8 +231,8 @@ menu is not the same exercise as deciding what matters.
 ## The task
 
 The car drives round a closed 50 m track as fast as it can (top speed ~6.7 m/s)
-without touching the walls or flipping over. An episode lasts up to 90 seconds
-(2700 policy steps) and ends early on a wall hit, a roll-over, or when the car
+without touching the walls or flipping over. An episode lasts up to 60 seconds
+(1800 policy steps) and ends early on a wall hit, a roll-over, or when the car
 stops making progress.
 
 The official track is 0.70 m wide with the centerline running exactly down the
@@ -286,8 +287,9 @@ says so plainly if it does not.
 iteration. Trace each part of your reward: when a policy does something strange,
 the fastest way to find out why is to see which term paid for it.
 
-`teamcode/env.py` is a complete worked example — 23 observations, 7 reward
-terms, three terminations — that trains as-is and is yours to rewrite.
+`teamcode/env.py` is a worked example — 3 observations, 1 reward term, 2
+terminations — that trains as-is, gets round the track slowly, and is yours to
+rewrite.
 
 ### One constraint worth knowing
 
@@ -351,27 +353,45 @@ would begin with a mirrored view of the track.
 Everything in this section is `teamcode/env.py`. None of it is a
 requirement; it is a worked example that trains.
 
-### What the policy sees — 23 numbers
+It is **deliberately the least that works**: three observations, one reward
+term, two terminations, every car starting from the same point. It learns to get
+round the track and it is slow. That is the floor. Beating it is the exercise,
+and the fastest way to is to add to it rather than to adjust it.
+
+Worth being precise about **why** it is slow, because it is not the reward. The
+reward already pays for speed — distance per step, summed over a fixed episode,
+*is* average speed. It is slow because of what it cannot see and how little of
+the future it is trained to care about:
+
+- the policy is told where the car is *now* and nothing about where the track
+  goes next, so it cannot prepare for a corner, only react once it is in one;
+- `gamma` in `teamcode/ppo_cfg.py` is 0.99 — a horizon of about 3 s at 30 Hz,
+  enough to see a wall coming, nowhere near the ~10 s of a lap, so it cannot
+  learn to give up speed here for a better exit there;
+- the networks are 64×64, and every car starts from the same point.
+
+A policy with no preview has exactly one safe strategy: go slowly enough to
+correct whatever appears. Give it a lookahead, lengthen the horizon, and it
+stops needing to.
+
+### What the policy sees — 3 numbers
 
 | Index | Signal | Scaled by |
 |-------|--------|-----------|
-| 0 | `car.wheel_speed` | top speed (6.7 m/s) |
-| 1 | `car.speed_forward` | top speed |
-| 2 | `car.speed_lateral` — drift | top speed |
-| 3 | `car.yaw_rate` | 10 rad/s |
-| 4 | `car.cross_track_error` | 0.3 m |
-| 5 | `car.heading_error` | π |
-| 6 | `car.dist_to_next_corner` | 5 m |
-| 7 | `car.next_corner_curvature` | 10 m⁻¹ |
-| 8–22 | `car.lookahead(...)` — 5 points: (x, y) in the car's own frame + curvature | 5 m / 10 m⁻¹ |
+| 0 | `car.speed_forward` | top speed (6.7 m/s) |
+| 1 | `car.signed_cross_track_error` | 0.3 m |
+| 2 | `car.heading_error` | π/2 |
 
-The lookahead offsets are counted in centerline points, not metres, so how far
+`car.lookahead([10, 20, 40, 70, 100])` returns the centerline ahead in the car's
+own frame with the curvature at each point, and is the single biggest thing
+missing. The offsets are counted in centerline points, not metres, so how far
 ahead they actually sit depends on how densely that stretch of centerline was
-exported. Worth knowing before you tune them.
+exported — worth knowing before you tune them.
 
-Also on `car` and unused by the baseline: `dist_to_wall` (it is blind to how
-close the walls are), the last action, `steer_angle`, the per-wheel arrays,
-`suspension_travel` and `progress_m`.
+Also on `car` and unused by the baseline: `wheel_speed` and `slip`,
+`speed_lateral` and `yaw_rate`, `dist_to_wall` (it is blind to how close the
+walls are), `dist_to_next_corner` and `next_corner_curvature`, the last action,
+`steer_angle`, the per-wheel arrays, `suspension_travel` and `progress_m`.
 
 ### What the policy controls — 2 numbers
 
@@ -382,21 +402,33 @@ These two are locked. Every team's policy drives the car the same way.
 
 ### How it is rewarded
 
+One term: **how far it got.**
+
+```python
+car.speed_forward / car.max_speed_m_s * car.step_dt
+```
+
 The principle worth keeping even if you replace everything else: **only covering
-ground quickly earns real reward**, and everything else is a small penalty
-shaping *how*. A term that pays for anything other than progress tends to get
+ground quickly earns real reward**, and anything else belongs as a small penalty
+shaping *how*. A term that pays for something other than progress tends to get
 farmed — the classic failure is an alive bonus big enough that stopping in a
 safe corner beats racing.
 
-| Term | Weight | What it does |
-|------|--------|--------------|
-| Forward distance | 4.0 | The main reward: `forward_speed / max_speed × dt` |
-| Alive bonus | 0.02 | A constant trickle for staying on the track |
-| Steering usage | −0.003 | Discourages steering beyond a ±0.05 deadzone |
-| Steering rate | −0.003 | Discourages jerky steering |
-| Throttle rate | −0.002 | Discourages jerky throttle |
-| Wheel slip | −0.03 | Discourages spinning or locking the wheels |
-| Body roll | −0.1 | Discourages leaning, which precedes a roll-over |
+There are no penalties here at all, and it shows: the car saws at the steering,
+spins its wheels off the line and leans into corners hard enough to lift a
+wheel. Each of these is a term to add, an order of magnitude below the distance
+term:
+
+| Candidate | Reads |
+|-----------|-------|
+| Wheel slip | `car.slip` — spinning or locking the wheels |
+| Body roll | `car.roll` — leaning, which precedes a roll-over |
+| Steering rate | `car.steer_cmd - car.steer_cmd_prev` — jerky steering |
+| Throttle rate | `car.throttle_cmd - car.throttle_cmd_prev` |
+| Steering usage | `car.steer_cmd` beyond a small deadzone |
+
+Log each one separately with `self.log(...)`: when the policy does something
+strange, that is the fastest way to see which term paid for it.
 
 **Lap time is never a reward.** It is measured, and a measurement the policy can
 influence is not a measurement. To reward progress use `car.speed_forward` or
@@ -409,8 +441,19 @@ influence is not a measurement. To reward progress use `car.speed_forward` or
 While you **train**, `compute_terminations` is the only thing that ends an
 episode early. Nothing is forced on you. Ending an episode when a car has
 stopped saves samples; ending one when it drifts wide teaches a tighter line and
-may also teach timidity. Your call. The baseline ends on a wall hit, a
-roll-over, and a stall.
+may also teach timidity. Your call. The baseline ends on a wall hit and on a
+stall — below 0.04 of top speed once the car has had 45 steps to get going.
+
+The stall rule earns its place: a car that shuffles back and forth on the spot
+earns almost nothing and never crashes, so without it that is a *stable* thing
+for the policy to settle into, and it will. Terminating gives the state a value
+of zero, which makes standing still strictly worse than driving. Note that the
+baseline reads the speed instantaneously, where the SDK's own rule wants 45
+*consecutive* slow steps: a jittering car clears the threshold half the time, so
+a consecutive count never fires.
+
+A roll-over (`car.up_axis < 0.3`) still sits out the rest of its episode
+producing nothing, which is free training speed to reclaim.
 
 While a lap is being **measured** (`benchmark`, or `enforce_official_rules`), the
 SDK's crash rules apply *instead of* yours and a car that hits a wall freezes,
@@ -423,8 +466,9 @@ so every team's cars fail for exactly the same reasons:
 | Stall (measured runs only) | barely moving for 45 consecutive steps → episode ends |
 
 The stall rule is separate because whether a stalled car is worth terminating is
-a training decision. During a measured run it is on, so a car pinned against a
-wall fails in a moment instead of sitting out the whole attempt window.
+a training decision (the baseline terminates on it, with its own threshold).
+During a measured run it is on, so a car pinned against a wall fails in a moment
+instead of sitting out the whole attempt window.
 
 Note that the crash radius is measured from the car's **centre**. A car that
 wedges its nose against a wall can sit just outside 0.15 m and never register as
@@ -444,22 +488,23 @@ Where cars start is **yours**, and it is not a property of the track.
 The SDK's default is deliberately the dullest one there is: `SpawnManager` puts
 every car on the **world origin**, facing along the track — one hardcoded point,
 the same one `benchmark` scores from, with no opinion about which corners are
-worth practising.
+worth practising. **The baseline takes that default**, so it only ever practises
+the track from one place and in one direction, and the corners it keeps losing
+get no more attention than the ones it has learned.
 
 `PresetSpawnManager(points=[...])` spreads cars over a list of poses you choose,
-each usable facing either way. The baseline's list is `SPAWN_POINTS` in
-`teamcode/env.py`, in world metres — change it, add to it, or subclass
-either manager and set `cfg.spawn_manager` to something else entirely.
-Randomising along the centerline, or starting cars at speed rather than from
-rest, are both reasonable things to try.
+in world metres, each usable facing either way. Set `cfg.spawn_manager` to one
+in `teamcode/env.py` — or subclass either manager and do something else
+entirely. Randomising along the centerline, or starting cars at speed rather
+than from rest, are both reasonable things to try.
 
 Since a scored attempt always starts at (0, 0), it is worth keeping a start
 there among whatever else you train on.
 
 ### Spawn direction balancing
 
-Because each preset is used in both directions, one direction can end up easier
-than the other and dominate the learning signal. `PresetSpawnManager` tracks a
+If each preset is used in both directions, one direction can end up easier than
+the other and dominate the learning signal. `PresetSpawnManager` tracks a
 rolling average episode length per direction and spawns more cars into whichever
 is currently doing *worse*. As the two even out, the split converges back to
 roughly 50/50. Machinery, not a rule — turn it off with
@@ -499,6 +544,26 @@ Both directions round the track are timed. In TensorBoard you get
 `Lap/best_lap_time_s`, `Lap/mean_lap_time_s` and `Lap/laps_per_min`. The first
 two only appear once some car has completed a lap — before that there is nothing
 to average, and a placeholder would just be a misleading flat line.
+
+### Why your episodes have to be longer than a lap
+
+The out-lap rule sets a floor on `episode_length_s`, and it catches people out.
+A car has to cross the line **twice** before anything is recorded: once to end
+the out-lap and start the clock, once to close the timed lap. From the origin
+that is 14.7 m to the line plus a full 50 m lap — **65 m before the first
+recordable lap**, which at 1.5–2 m/s is 30–45 s.
+
+The lap timer is reset on *every* episode boundary, including a timeout, so a
+too-short episode does not accumulate progress across episodes — it restarts the
+out-lap each time. The failure mode is silent and easy to misread: the cars
+visibly drive laps in the GUI and `benchmark` reports times, while
+`Lap/best_lap_time_s` never appears in TensorBoard at all. `benchmark` is
+unaffected because `AttemptTimer` has no out-lap to pay for.
+
+If you want short episodes, spawn cars a couple of metres *before* the line
+(just outside the 2 m gate window) so the out-lap costs almost nothing. Spawning
+*on* the line is the worst case, not the best: the car is inside the window, has
+to leave it to arm, and its first crossing a full lap later is the out-lap.
 
 ### While being scored — `AttemptTimer`
 
@@ -663,7 +728,7 @@ Metrics worth watching:
 | `Train/mean_lr` | Adaptive learning rate (falls as KL rises) |
 | `Info/kl` | How much the policy changed — should hover near 0.01 |
 | `Lap/best_lap_time_s` | Appears once any car completes a lap |
-| `Spawn/mean_ep_len_*` | How the two directions are doing |
+| `Spawn/mean_ep_len_*` | How the two directions are doing (`PresetSpawnManager` only) |
 
 Anything you pass to `self.log(...)` shows up too, averaged over the iteration.
 
@@ -673,19 +738,19 @@ All of these live in `teamcode/ppo_cfg.py`, and all of them are yours.
 
 | Parameter | Value |
 |-----------|-------|
-| Actor hidden layers | [512, 256] (Mish) |
-| Critic hidden layers | [512, 256] (Mish) |
+| Actor hidden layers | [64, 64] (ELU) |
+| Critic hidden layers | [64, 64] (ELU) |
 | Initial noise std | 0.8 |
 | Learning rate | 1e−4 (adaptive) |
 | PPO epochs | 6 |
 | Mini-batches | 6 |
 | GAE λ | 0.95 |
-| Discount γ | 0.9965 |
+| Discount γ | 0.99 — a ~3 s horizon; 0.9965 puts a whole lap inside it |
 | Entropy coefficient | 0.004 |
 | Clip parameter | 0.2 |
 | Desired KL | 0.01 |
 | Max gradient norm | 0.75 |
-| Steps per env per iteration | 1600 |
+| Steps per env per iteration | 800 |
 
 ---
 

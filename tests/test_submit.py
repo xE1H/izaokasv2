@@ -403,3 +403,23 @@ def test_the_endpoint_is_built_without_a_double_slash():
         Submitter(team="T", url="https://board.example/").endpoint
         == "https://board.example/api/submissions"
     )
+
+
+def test_a_lap_that_did_not_improve_says_what_the_board_holds(
+    configured, report, board, capsys
+):
+    """`lap_time_s` is the lap just sent, not the one the board is showing."""
+    board.body = {
+        "accepted": True,
+        "status": "ranked",
+        "ranked": True,
+        "rank": 1,
+        "lap_time_s": 15.367,
+        "personal_best": False,
+        "message": "Lap 15.367s recorded. Your best stays 15.200s (P1).",
+    }
+    print_outcome(submit(report))
+    printed = capsys.readouterr().out
+
+    assert "Your best stays 15.200s" in printed
+    assert "15.367 s" not in printed, "printing the slower lap as the placing misleads"

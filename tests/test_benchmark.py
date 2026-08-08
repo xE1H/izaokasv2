@@ -101,3 +101,26 @@ def test_no_submit_skips_publishing(module):
     ]
     assert guarded, "publish() ignores --no-submit"
     assert any(isinstance(child, ast.Return) for child in ast.walk(guarded[0]))
+
+
+def test_shutdown_cannot_hold_the_process_open(module):
+    """Isaac Sim's teardown does not reliably return; the run must end anyway."""
+    assert "close_or_bail" in calls_in(function(module, "main"))
+
+    bail = function(module, "close_or_bail")
+    source = ast.dump(bail)
+    assert "Thread" in source, "close_or_bail() arms no watchdog"
+    assert "_exit" in source, "a stuck teardown needs os._exit, not sys.exit"
+
+
+def test_the_result_is_safe_before_the_deadline_is_armed(module):
+    """Nothing may be lost when the watchdog fires, so it is armed last."""
+    order = [
+        node.value.func.id
+        for node in function(module, "main").body
+        if isinstance(node, ast.Expr)
+        and isinstance(node.value, ast.Call)
+        and isinstance(node.value.func, ast.Name)
+    ]
+    assert order.index("write_report") < order.index("close_or_bail")
+    assert order.index("publish") < order.index("close_or_bail")

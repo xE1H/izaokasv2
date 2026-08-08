@@ -74,6 +74,8 @@ import json
 import math
 import os
 import sys
+import threading
+import time
 
 os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
 
@@ -85,6 +87,11 @@ TASK = "LituanicaX-Race-Team-v0"
 
 #: How many attempts a submission is the best of.
 AGENTS = 10
+
+#: How long the simulator gets to shut down before the process stops waiting
+#: for it. Generous — a shutdown that is merely slow finishes well inside this;
+#: one that is stuck never finishes at all. See :func:`close_or_bail`.
+SHUTDOWN_GRACE_S = 60.0
 
 #: How much the starting heading varies between them, in degrees either way.
 #: Small enough that every car starts on the same piece of track pointing the
@@ -261,7 +268,7 @@ def main(env_cfg: DirectRLEnvCfg, agent_cfg: RslRlOnPolicyRunnerCfg):
     write_report(report, checkpoint)
     publish(report)
 
-    env.close()
+    close_or_bail(env)
 
 
 def run_attempts(
@@ -464,6 +471,37 @@ def write_report(report: dict, checkpoint) -> None:
     with open(out, "w") as handle:
         json.dump(report, handle, indent=2)
     print(f"\n[benchmark] written to {out}")
+
+
+def close_or_bail(env) -> None:
+    """Shut the simulator down, but do not let it hold the process open.
+
+    Isaac Sim's teardown does not reliably return — on a supported driver and a
+    stock scene it can sit there indefinitely, long after the last line of
+    output. A benchmark that has already printed its score, written
+    ``submission.json`` and published the lap has nothing left to do at that
+    point, and the process it is keeping alive is holding the GPU, which is the
+    one thing the next run needs.
+
+    So the shutdown gets a deadline. Everything worth keeping is on disk and
+    already sent before the timer is armed, which is what makes exiting hard
+    safe rather than merely convenient.
+    """
+
+    def bail() -> None:
+        time.sleep(SHUTDOWN_GRACE_S)
+        print(
+            f"\n[benchmark] the simulator has not shut down after "
+            f"{SHUTDOWN_GRACE_S:g}s, so this exits without waiting for it. "
+            "Your result is unaffected: it is printed above, written to "
+            "submission.json, and already published."
+        )
+        sys.stdout.flush()
+        # Not sys.exit(): that unwinds through the same teardown that is stuck.
+        os._exit(0)
+
+    threading.Thread(target=bail, daemon=True).start()
+    env.close()
 
 
 def publish(report: dict) -> None:

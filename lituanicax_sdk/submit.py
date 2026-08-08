@@ -281,7 +281,13 @@ def print_outcome(outcome: SubmissionOutcome, *, url: str | None = None) -> None
     response = outcome.response or {}
 
     if outcome.ranked:
-        print(f"[submit] {_placing(response) or outcome.message}")
+        # `lap_time_s` is the lap just sent, not the one the board is showing.
+        # Those are the same thing only when the lap improved on the team's
+        # best, so a slower run must say what the board actually holds — the
+        # board's own wording does, and "P1   15.367 s" for a board showing
+        # 15.200 does not.
+        improved = bool(response.get("personal_best"))
+        print(f"[submit] {(_placing(response) if improved else '') or outcome.message}")
     else:
         print(f"[submit] {outcome.message}")
         official = response.get("official_sdk_fingerprint")

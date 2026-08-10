@@ -744,6 +744,12 @@ One counted row per team — that team's fastest verified lap — plus any faste
 lap of theirs still being checked, shown greyed out and without a position.
 Sortable by lap time or by when it was set.
 
+**Verified laps are always listed above unverified ones, whatever the times.** A
+claim nobody has reproduced does not outrank a lap somebody has by being
+quicker: being quicker is what it is claiming, not what it has shown. So a
+faster pending row of yours appears below your verified one, and below everyone
+else's verified ones too, until it has been re-run.
+
 Publishing cannot cost you a run. No network, no team name, board down: the
 score is still printed and still written to `submission.json`, and one line says
 it was not sent. An upload that fails costs you verification, not the run.

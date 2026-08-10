@@ -49,10 +49,21 @@ counts.
 
 The jitter is seeded (``--seed``), so a rerun repeats the same ten starts.
 
-**The lap is published.** When the run produces a time it is sent to the
-official leaderboard — team name, lap time and the SDK's fingerprint — and the
-board ranks it only if that fingerprint matches the SDK everyone else is
-racing. Set ``LITUANICAX_TEAM`` so the board knows whose lap it is — see
+**The lap is published, and so is the policy that set it.** When the run
+produces a time it is sent to the official leaderboard — team name, lap time,
+the SDK's fingerprint — together with a zip of the checkpoint that drove it,
+your ``teamcode/`` and the run's config. The lap appears on the board straight
+away, greyed out and worth nothing: *awaiting verification*. The organisers then
+run that same policy themselves, on a clean official SDK, and the row turns
+green and takes its position if it produces the same time.
+
+That is the whole of what makes the board mean anything. The fingerprint is
+computed by your copy of the SDK, so a team willing to edit ``_locked.py`` can
+send any value at all; a lap re-driven on somebody else's machine cannot be
+edited into existence. See :mod:`lituanicax_sdk.bundle` for what is in the zip
+and :mod:`lituanicax_sdk.verify` for what the organisers run.
+
+Set ``LITUANICAX_TEAM`` so the board knows whose lap it is — see
 :mod:`lituanicax_sdk.submit` — and pass ``--no-submit`` for a run you keep to
 yourself. Publishing cannot fail a run: a board that is unreachable costs you a
 printed line and nothing else.
@@ -152,7 +163,7 @@ parser.add_argument(
 parser.add_argument(
     "--no-submit",
     action="store_true",
-    help="Score the policy without publishing the result to the leaderboard.",
+    help="Score the policy without publishing the result, or the policy, at all.",
 )
 AppLauncher.add_app_launcher_args(parser)
 args_cli, hydra_args = parser.parse_known_args()
@@ -187,6 +198,8 @@ from lituanicax_sdk import (  # noqa: E402
     tracks,
     verify_integrity,
 )
+from lituanicax_sdk._locked import runtime_fingerprint  # noqa: E402
+from lituanicax_sdk.bundle import BundleError, build_bundle  # noqa: E402
 from lituanicax_sdk.runs import find_checkpoint  # noqa: E402
 from lituanicax_sdk.spawn import SpawnManager  # noqa: E402
 from lituanicax_sdk.submit import print_outcome, submit  # noqa: E402
@@ -266,7 +279,7 @@ def main(env_cfg: DirectRLEnvCfg, agent_cfg: RslRlOnPolicyRunnerCfg):
     )
     print_report(report)
     write_report(report, checkpoint)
-    publish(report)
+    publish(report, checkpoint)
 
     close_or_bail(env)
 
@@ -412,6 +425,11 @@ def build_report(
         "spawn": spawn.describe(),
         "checkpoint": str(checkpoint),
         "sdk_fingerprint": sdk_fingerprint(),
+        # Read after the driving rather than before it, and after `teamcode` has
+        # had every chance to touch the SDK: this is what the code the lap was
+        # actually set under hashes to in memory. The organisers compare it with
+        # a clean process of their own. See _locked.runtime_fingerprint.
+        "runtime_fingerprint": runtime_fingerprint(),
         "sdk_modified": modified,
     }
 
@@ -512,19 +530,41 @@ def close_or_bail(env) -> None:
     env.close()
 
 
-def publish(report: dict) -> None:
-    """Send the lap to the official leaderboard.
+def publish(report: dict, checkpoint) -> None:
+    """Send the lap, and the policy that drove it, to the official leaderboard.
 
-    Best-effort by design: :func:`lituanicax_sdk.submit.submit` reports a
-    failure rather than raising one, so a board that is down, a laptop with no
-    network or a team that has not set its name all still get their score
-    printed and written to ``submission.json``.
+    The bundle is the half that matters: a lap time is a claim anybody can type,
+    and the board no longer takes claims. What it ranks is a lap the organisers
+    have re-run from the team's own checkpoint and ``teamcode/`` on a clean SDK.
+    So the zip goes up with the time, and the row stays grey until it has been
+    reproduced.
+
+    Best-effort by design, both halves: :func:`lituanicax_sdk.submit.submit`
+    reports a failure rather than raising one, so a board that is down, a laptop
+    with no network or a team that has not set its name all still get their
+    score printed and written to ``submission.json``.
     """
     if args_cli.no_submit:
-        print("[submit] skipped (--no-submit)")
+        print("[submit] skipped (--no-submit) — nothing published, nothing to verify")
         return
 
-    outcome = submit(report, team=args_cli.team)
+    bundle = None
+    if report["best_lap_time_s"] is not None:
+        try:
+            bundle = build_bundle(report, checkpoint, team=args_cli.team or "team")
+            print(
+                f"[submit] policy bundle {bundle.megabytes:.1f} MB, "
+                f"{len(bundle.included)} files"
+            )
+            for left_out in bundle.skipped:
+                print(f"[submit]   not included: {left_out}")
+        except BundleError as exc:
+            # A lap with no bundle is still worth publishing — it goes on the
+            # board as a claim nobody can check, which is the honest thing for
+            # it to be, and the team can see why and rerun.
+            print(f"[submit] the policy bundle could not be built — {exc}")
+
+    outcome = submit(report, team=args_cli.team, bundle=bundle)
     print_outcome(outcome)
 
 

@@ -14,6 +14,7 @@ from lituanicax_sdk._locked import (
     LockedParameterError,
     SealedMeta,
     assert_unchanged,
+    runtime_fingerprint,
     sdk_fingerprint,
     sealed,
     verify_integrity,
@@ -263,3 +264,48 @@ def test_modifying_the_sdk_is_detected(tmp_path, monkeypatch):
 
     changed = verify_integrity(quiet=True)
     assert "vehicle.py" in changed
+
+
+# ── The lock that catches a patched SDK rather than an edited one ──────────
+#
+# `sdk_fingerprint` hashes files, which is exactly the wrong thing to hash when
+# the cheat is three lines in teamcode/__init__.py replacing the crash rules
+# with something friendlier. Nothing on disk changes; the rules that ran were
+# never on disk. `runtime_fingerprint` hashes the objects instead, and the
+# organiser compares a scoring run's value against a clean process of their own.
+
+
+def test_the_runtime_fingerprint_is_stable_and_short():
+    assert runtime_fingerprint() == runtime_fingerprint()
+    assert len(runtime_fingerprint()) == 12
+
+
+def test_replacing_a_crash_rule_at_runtime_moves_it(monkeypatch):
+    from lituanicax_sdk import rules
+
+    before = runtime_fingerprint()
+    monkeypatch.setattr(rules, "touching_wall", lambda *args, **kwargs: None)
+
+    assert runtime_fingerprint() != before
+    assert sdk_fingerprint() == sdk_fingerprint(), "and the file hashes see nothing"
+
+
+def test_moving_a_locked_constant_at_runtime_moves_it_too(monkeypatch):
+    """A wall you can never touch changes no function's bytecode at all."""
+    from lituanicax_sdk import rules
+
+    before = runtime_fingerprint()
+    monkeypatch.setattr(rules, "WALL_COLLISION_RADIUS_M", 0.0)
+
+    assert runtime_fingerprint() != before
+
+
+def test_undoing_the_patch_restores_the_fingerprint(monkeypatch):
+    from lituanicax_sdk import rules
+
+    before = runtime_fingerprint()
+    with monkeypatch.context() as patched:
+        patched.setattr(rules, "stalled", lambda *args, **kwargs: None)
+        assert runtime_fingerprint() != before
+
+    assert runtime_fingerprint() == before

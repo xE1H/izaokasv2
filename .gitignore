@@ -28,6 +28,10 @@ outputs/
 # one team's name to the next.
 .lituanicax.json
 
+# Downloaded policy bundles, unpacked and re-run by lituanicax_sdk.verify.
+# Organiser-only, one directory per submission, and safe to delete.
+.verify/
+
 # Coding-agent scratch files and directories
 .codex
 .opencode/

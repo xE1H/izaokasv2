@@ -170,6 +170,101 @@ def sdk_fingerprint() -> str:
     return hashlib.sha256(combined).hexdigest()[:12]
 
 
+#: The SDK behaviour a lap time depends on, as ``module: attribute path``. Each
+#: entry is hashed *as it exists in memory* by :func:`runtime_fingerprint`.
+#: Keep it to things that decide how fast the car goes round: the vehicle model,
+#: the crash rules, the clocks, and the environment's stepping.
+_RUNTIME_CRITICAL: tuple[tuple[str, str], ...] = (
+    ("lituanicax_sdk.dynamics", "*"),
+    ("lituanicax_sdk.rules", "*"),
+    ("lituanicax_sdk.timing", "LapTimer"),
+    ("lituanicax_sdk.timing", "AttemptTimer"),
+    ("lituanicax_sdk.vehicle", "*"),
+    ("lituanicax_sdk.env", "RaceEnv"),
+    ("lituanicax_sdk.track", "Track"),
+)
+
+
+def _code_digest(value: object, into: hashlib._Hash, seen: set[int]) -> None:
+    """Fold the compiled body of ``value`` into ``into``, functions and classes.
+
+    Bytecode rather than source: the question is what this process will actually
+    run, and source on disk is what :func:`verify_integrity` already covers.
+    """
+    if id(value) in seen:
+        return
+    seen.add(id(value))
+
+    code = getattr(value, "__code__", None)
+    if code is not None:
+        into.update(code.co_code)
+        into.update(repr(code.co_consts).encode())
+        into.update(repr(code.co_names).encode())
+        return
+
+    if isinstance(value, (staticmethod, classmethod, property)):
+        for wrapped in (getattr(value, "__func__", None), getattr(value, "fget", None)):
+            if wrapped is not None:
+                _code_digest(wrapped, into, seen)
+        return
+
+    if isinstance(value, type):
+        for name in sorted(vars(value)):
+            into.update(name.encode())
+            _code_digest(vars(value)[name], into, seen)
+
+
+def runtime_fingerprint() -> str:
+    """Hash the SDK's competition-critical code *as this process holds it*.
+
+    :func:`sdk_fingerprint` hashes files. That catches an edited SDK and misses
+    a patched one: a team's ``teamcode`` is imported into the same interpreter
+    as the SDK, and three lines in its ``__init__`` can replace the crash rules
+    or the lap clock with something friendlier without touching a single byte on
+    disk. The files still hash to the official fingerprint, because the files
+    were never the thing that ran.
+
+    So this hashes the objects. The benchmark records it after the driving is
+    over, and the organiser compares it against the value a clean interpreter
+    produces on their own machine — same Python, same SDK, no ``teamcode``. Two
+    different numbers mean the run was not the run the SDK describes.
+
+    Modules that are not imported are skipped rather than imported for this: the
+    fingerprint covers what the process is using, and importing ``env`` outside
+    Isaac Sim would fail anyway. Which modules took part is folded in, so a run
+    that quietly avoided loading one cannot pass for a run that did.
+    """
+    import sys
+
+    digest = hashlib.sha256()
+    seen: set[int] = set()
+
+    for module_name, attribute in _RUNTIME_CRITICAL:
+        module = sys.modules.get(module_name)
+        if module is None:
+            digest.update(f"{module_name}:absent\n".encode())
+            continue
+
+        digest.update(f"{module_name}:{attribute}\n".encode())
+        if attribute == "*":
+            for name in sorted(vars(module)):
+                value = vars(module)[name]
+                # A module constant is as load-bearing as the code that reads
+                # it: `rules.WALL_COLLISION_RADIUS_M = 0.0` is a car that never
+                # crashes, and it changes no function's bytecode at all.
+                if isinstance(value, (bool, int, float, str, tuple, frozenset)):
+                    digest.update(f"{name}={value!r}\n".encode())
+                    continue
+                if getattr(value, "__module__", None) != module_name:
+                    continue  # imported from elsewhere; hashed where it lives
+                digest.update(name.encode())
+                _code_digest(value, digest, seen)
+        else:
+            _code_digest(getattr(module, attribute, None), digest, seen)
+
+    return digest.hexdigest()[:12]
+
+
 def verify_integrity(*, quiet: bool = False) -> list[str]:
     """Compare the SDK sources against the manifest.
 

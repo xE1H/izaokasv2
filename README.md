@@ -151,7 +151,9 @@ lituanicax_sdk/    LOCKED. The car, the ground, the physics, the lap clock —
 ├── track.py         tracks;  tracks/ the official one
 ├── spawn.py         where cars start; the default is (0, 0)
 ├── runs.py          where runs live, finding checkpoints
-├── submit.py        publishing a lap to the leaderboard
+├── submit.py        publishing a lap, and the policy that set it
+├── bundle.py        that policy, zipped: checkpoint + teamcode + config
+├── verify.py        the organisers' side: re-run a published lap and report
 └── benchmark.py     ★ the official score
 
 teamcode/          YOURS. This is what you edit.
@@ -616,7 +618,9 @@ your own; the policy could not run otherwise.
 
 The result is printed and written to `submission.json` next to the checkpoint,
 stamped with the SDK fingerprint and the exact spawn headings used, so a time
-can be traced to the rules it was set under and reproduced.
+can be traced to the rules it was set under and reproduced. It is also
+published, together with the policy that set it — see
+[the leaderboard](#the-leaderboard).
 
 ```
 ════════════════════════════════════════════════════════
@@ -645,8 +649,10 @@ script.
 
 ## The leaderboard
 
-Every `benchmark` run that produces a lap publishes it. Three things go up:
-**your team name, the lap time, and the SDK's fingerprint.**
+Every `benchmark` run that produces a lap publishes it. Two things go up: **the
+lap** — your team name, the time and the SDK's fingerprint — and **the policy
+that drove it**, as a zip of the checkpoint, your `teamcode/` and the run's
+config.
 
 The board is at **<https://isaacleaderboard.netlify.app/>**. Tell the SDK who
 you are, once:
@@ -657,7 +663,11 @@ benchmark --headless
 ```
 
 ```
-[submit] P3   15.200 s   a personal best
+[submit] policy bundle 3.4 MB, 9 files
+[submit] 15.200 s   awaiting verification   would be P3
+[submit] Policy bundle stored (3.4 MB). The lap is on the board as awaiting
+         verification until the organisers re-run it.
+[submit] it counts once the organisers reproduce it on their own machine.
 [submit] https://isaacleaderboard.netlify.app/
 ```
 
@@ -674,27 +684,112 @@ creates your team. Nothing is gained by submitting under someone else's name —
 a lap slower than theirs does not move them, and a lap faster than theirs is
 one you want your own name on.
 
-**The fingerprint is what makes the board mean anything.** The site knows which
-SDK the competition is being run on, and ranks a lap only if the fingerprint
-sent with it matches. A modified SDK produces a different fingerprint, so a lap
-set on one is recorded but never ranked — the same rule the local warning from
-`verify_integrity` states, enforced where it counts. If your submission comes
-back unranked and you have not touched `lituanicax_sdk/`, you are on an old
-SDK: pull.
+### A lap reaches the board in two steps
 
-Nobody types that fingerprint in: every push to `lituanicax_sdk/` on upstream
-recomputes it and tells the board
+**1. Published.** Your row appears immediately, greyed out, marked *awaiting
+verification*. It sits at the time it claims, so you can see where you would be,
+and it counts for nothing: it holds no position and displaces nobody.
+
+**2. Verified.** The organisers download the policy you sent, run it themselves
+on the official SDK on their own machine, and compare. If it produces your lap
+again, the row turns green and takes its position. If it does not, the row is
+rejected and leaves the board.
+
+That is the whole of what a green row means, and it is why the board is worth
+something. **The fingerprint alone could never do this job.** The SDK is in your
+repository — you can read and edit every line of it, including the file that
+computes the fingerprint — so a team willing to edit `_locked.py` could send any
+twelve characters it liked. A lap re-driven on somebody else's computer cannot
+be edited into existence.
+
+A lap has to reproduce **within 0.1 s or 1% of the claim, whichever is larger**
+— tens of milliseconds of drift between two machines running the same policy is
+expected; a second is a different policy.
+
+The fingerprint still decides whether a lap is *worth checking*: a lap that does
+not carry the official one is recorded and never queued. If your submission
+comes back ineligible and you have not touched `lituanicax_sdk/`, you are on an
+old SDK: pull. Nobody types that fingerprint in either — every push to
+`lituanicax_sdk/` on upstream recomputes it and tells the board
 ([`publish-sdk-hash.yml`](.github/workflows/publish-sdk-hash.yml)), so the board
 gates on whatever `git pull` gives you.
 
-The board shows one row per team — that team's fastest ranked lap — sortable by
-lap time or by when it was set.
+### What is in the bundle
+
+Built by [`lituanicax_sdk/bundle.py`](lituanicax_sdk/bundle.py), a few megabytes,
+and nothing surprising:
+
+| In the zip | Why it is needed |
+| --- | --- |
+| `checkpoint/model_*.pt` | the policy that was scored |
+| `teamcode/` | your observations and network shape — the checkpoint will not even load without them |
+| `params/` | the env and agent config the run was launched with |
+| `submission.json` | the report, exactly as it was written to your run |
+| `manifest.json` | a hash of every entry, and the command that reproduces the lap |
+
+Nothing else from `logs/` goes anywhere: not the TensorBoard events, not the
+videos, not your other checkpoints. Files nothing needs to *run* the policy are
+left out and named in the run's output — a `.blend` is how a track was made, not
+what the simulator loads.
+
+Yes, this means **your `teamcode/` is on the organisers' disk.** It is not
+published, the download needs the organisers' admin token, and it is deleted
+with the row if a submission is removed. If you would rather not send it, pass
+`--no-submit`: you keep the score and the board never hears about the lap. There
+is no third option where a lap counts and nobody may check it.
+
+### The board
+
+One counted row per team — that team's fastest verified lap — plus any faster
+lap of theirs still being checked, shown greyed out and without a position.
+Sortable by lap time or by when it was set.
 
 Publishing cannot cost you a run. No network, no team name, board down: the
 score is still printed and still written to `submission.json`, and one line says
-it was not sent. Nothing here retries and nothing here raises. `--no-submit`
-scores a policy without publishing it, and `--team NAME` overrides the name
-for one run.
+it was not sent. An upload that fails costs you verification, not the run.
+Nothing here retries and nothing here raises. `--no-submit` scores a policy
+without publishing anything at all, and `--team NAME` overrides the name for one
+run.
+
+### Verifying laps — for the organisers
+
+This is the other half, and it needs the board's admin token, which only the
+organisers have. It lives here rather than on the website because it needs the
+official SDK and a simulator, which is exactly what this repository is.
+
+```bash
+export LEADERBOARD_ADMIN_TOKEN="…"
+
+python -m lituanicax_sdk.verify             # the whole queue, one by one
+python -m lituanicax_sdk.verify --list      # what is waiting, run nothing
+python -m lituanicax_sdk.verify <id>        # just this one
+python -m lituanicax_sdk.verify <id> --dry-run --windowed   # watch it drive
+```
+
+With no arguments it does the whole job: every lap waiting, downloaded, re-run
+and marked, in one sitting. Each one is checked against its own hash, unpacked
+into `.verify/<id>/`, and driven — *their* checkpoint and `teamcode/` through
+*this* checkout of the SDK, as a subprocess whose working directory is the
+workspace, so their code shadows this repository's rather than replacing it. It
+posts the lap the machine produced; the board applies the tolerance and decides,
+so the rule is one rule, on the server, the same for everyone. One team's broken
+bundle is reported and the queue carries on. Laps published without a policy are
+skipped and counted at the end — there is nothing to re-run.
+
+**The admin token is the whole gate, and this file being public changes
+nothing.** Listing the queue, downloading a bundle and posting a verdict are all
+`/api/admin/` endpoints behind `ADMIN_TOKEN`. Without it the board answers 401
+to the first request and there is no second one, so a team can read every line
+of `verify.py` — and should — and still not move a single row. There is no local
+verdict to forge either: this posts *the lap the machine measured*, and the
+server decides what that means.
+
+**It runs code a competitor wrote.** It has to: `teamcode/` defines the
+observations the checkpoint expects, and importing it runs whatever is in it.
+The run's `runtime_fingerprint` is compared against a clean process here, so an
+SDK patched in memory is flagged in the note that goes with the verdict — but
+that is a tripwire, not a sandbox. Verify on a machine you would be willing to
+hand to a stranger, and read a remarkable lap's `teamcode/` before you run it.
 
 ---
 
@@ -869,19 +964,40 @@ This is a soft lock: the SDK is in your repository and you can read and edit
 every line of it. It is not there to stop you — it is there so that when you
 change something, you and everyone else know.
 
-The one place it is not soft is [the leaderboard](#the-leaderboard). The
-fingerprint travels with every published lap, and a lap whose fingerprint is
-not the competition's does not get ranked. Editing the SDK to make the car
-faster therefore costs you the board, not just a warning — which is the point:
-the lock is on the score, not on your editor.
+**And a soft lock is all a fingerprint can ever be.** It is computed by your copy
+of `_locked.py`. A team willing to edit that file can report the official
+fingerprint from an SDK that is nothing of the sort, and no amount of hashing
+inside the repository fixes that: the thing doing the checking is the thing
+being checked.
+
+So the board does not rely on it. What puts a lap on the leaderboard is the
+organisers **re-running your policy on their own machine, against their own
+copy of the SDK** — see [the leaderboard](#the-leaderboard). Your fingerprint
+decides whether a lap is worth their time; their re-run decides whether it
+counts. Editing the SDK to make the car faster therefore does not cost you a
+warning, and does not cost you a fingerprint check you might route around: it
+costs you the lap, because the car that drives it at the other end is the stock
+one and the time will not come back.
+
+Two things are hashed, and they catch different cheats:
+
+| | What it hashes | What it catches |
+| --- | --- | --- |
+| `sdk_fingerprint()` | the SDK's **files** on disk | an edited SDK |
+| `runtime_fingerprint()` | the SDK's competition-critical **objects in memory**, after the driving is done | an SDK patched at runtime — `teamcode/__init__.py` replacing the crash rules or moving `WALL_COLLISION_RADIUS_M`, which changes no file at all |
+
+The second travels in the bundle's manifest, and the organisers compare it with
+what a clean process on their own machine produces. Neither is a proof; both are
+things a lap has to explain.
 
 ---
 
 ## Tests
 
 The parts of the SDK that do not need Isaac Sim — the lap timer, the attempt
-timer, the track maths, `CarState`, every term, the locks, and the leaderboard
-client against a real socket — are tested on the CPU in seconds:
+timer, the track maths, `CarState`, every term, the locks, the policy bundle,
+and both leaderboard clients against a real socket — are tested on the CPU in
+seconds:
 
 ```bash
 .venv/bin/python -m pytest tests/ -q

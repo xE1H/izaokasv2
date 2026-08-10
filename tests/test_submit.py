@@ -4,10 +4,15 @@ Everything here runs on a loopback socket in milliseconds — no Isaac Sim, no
 GPU and no network. The server is a stand-in for the Netlify functions, and it
 records what it was sent, so the tests can assert on the wire format that the
 website is written against rather than on the client's internals.
+
+Publishing is two calls, not one: the lap, then the policy that set it. Both
+are covered here, and so is the shape of what the team sees when either half
+does not go.
 """
 
 from __future__ import annotations
 
+import base64
 import json
 import threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
@@ -16,6 +21,7 @@ import pytest
 
 from lituanicax_sdk import submit as submit_module
 from lituanicax_sdk._locked import sdk_fingerprint
+from lituanicax_sdk.bundle import Bundle
 from lituanicax_sdk.submit import (
     SubmissionError,
     Submitter,
@@ -34,12 +40,15 @@ FINGERPRINT = sdk_fingerprint()
 
 
 class FakeBoard:
-    """An HTTP server that answers /api/submissions and remembers the request."""
+    """An HTTP server that answers the board's two POSTs and remembers them."""
 
-    def __init__(self, status=201, body=None, official=FINGERPRINT):
+    def __init__(
+        self, status=201, body=None, official=FINGERPRINT, artifact_status=200
+    ):
         self.status = status
         self.body = body
         self.official = official
+        self.artifact_status = artifact_status
         self.requests: list[dict] = []
         self._server = HTTPServer(("127.0.0.1", 0), self._handler())
         self._thread = threading.Thread(target=self._server.serve_forever, daemon=True)
@@ -67,6 +76,11 @@ class FakeBoard:
                         "payload": payload,
                     }
                 )
+                if self.path.endswith("/api/artifacts"):
+                    self._respond(
+                        board.artifact_status, board._artifact_response(payload)
+                    )
+                    return
                 body = board.body
                 if body is None:
                     body = board._default_response(payload)
@@ -85,23 +99,53 @@ class FakeBoard:
 
         return Handler
 
+    @property
+    def artifact_calls(self) -> list[dict]:
+        return [
+            r["payload"] for r in self.requests if r["path"].endswith("/api/artifacts")
+        ]
+
     def _default_response(self, payload: dict) -> dict:
-        """The contract's own answer: rank it only if the SDK is the official one."""
-        ranked = payload.get("sdk_fingerprint") == self.official and not payload.get(
+        """The contract's own answer: a claim, awaiting the organisers' re-run."""
+        eligible = payload.get("sdk_fingerprint") == self.official and not payload.get(
             "sdk_modified"
         )
         return {
             "accepted": True,
-            "status": "ranked" if ranked else "sdk_mismatch",
-            "ranked": ranked,
+            "submission_id": "0bb1e1ba-0000-4000-8000-000000000001",
+            "status": "pending_verification" if eligible else "sdk_mismatch",
+            "eligible": eligible,
+            # Nothing is ranked on arrival, whatever the fingerprint says.
+            "ranked": False,
+            "verification": "pending" if eligible else None,
             "team": payload.get("team"),
             "lap_time_s": payload.get("lap_time_s"),
-            "rank": 1 if ranked else None,
-            "personal_best": ranked,
+            "rank": None,
+            "provisional_rank": 1 if eligible else None,
+            "would_be_personal_best": eligible,
             "official_sdk_fingerprint": self.official,
             "leaderboard_url": self.url + "/",
-            "message": "P1 — a new best." if ranked else "not the official SDK.",
+            "upload": {
+                "endpoint": "/api/artifacts",
+                "max_bytes": 4096,
+                "max_part_bytes": 64,
+                "max_parts": 24,
+            }
+            if eligible
+            else None,
+            "message": "awaiting verification."
+            if eligible
+            else "not the official SDK.",
         }
+
+    def _artifact_response(self, payload: dict) -> dict:
+        if payload.get("complete"):
+            return {
+                "accepted": True,
+                "bundle": {"parts": payload.get("parts")},
+                "message": "Policy bundle stored.",
+            }
+        return {"accepted": True, "part": payload.get("part")}
 
 
 @pytest.fixture
@@ -250,10 +294,13 @@ def test_a_run_with_no_lap_has_nothing_to_submit(report):
 # ═══════════════════════════════════════════════════════════════════════════
 
 
-def test_a_valid_lap_is_sent_and_ranked(configured, report, board):
+def test_a_valid_lap_is_sent_and_left_awaiting_verification(configured, report, board):
+    """A published lap is a claim: stored, shown, and counting for nothing."""
     outcome = submit(report)
 
-    assert outcome.sent and outcome.ranked
+    assert outcome.sent
+    assert not outcome.ranked, "nothing ranks until the organisers reproduce it"
+    assert outcome.verification == "pending"
     assert board.requests[0]["path"] == "/api/submissions"
     sent = board.requests[0]["payload"]
     assert sent["lap_time_s"] == pytest.approx(42.137)
@@ -405,17 +452,16 @@ def test_the_endpoint_is_built_without_a_double_slash():
     )
 
 
-def test_a_lap_that_did_not_improve_says_what_the_board_holds(
+def test_a_ranked_lap_says_what_the_board_holds_not_what_was_sent(
     configured, report, board, capsys
 ):
     """`lap_time_s` is the lap just sent, not the one the board is showing."""
     board.body = {
         "accepted": True,
-        "status": "ranked",
+        "status": "verified",
         "ranked": True,
         "rank": 1,
         "lap_time_s": 15.367,
-        "personal_best": False,
         "message": "Lap 15.367s recorded. Your best stays 15.200s (P1).",
     }
     print_outcome(submit(report))
@@ -423,3 +469,133 @@ def test_a_lap_that_did_not_improve_says_what_the_board_holds(
 
     assert "Your best stays 15.200s" in printed
     assert "15.367 s" not in printed, "printing the slower lap as the placing misleads"
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+#  The policy that goes with the lap
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+@pytest.fixture
+def bundle():
+    """A stand-in for the zip build_bundle produces. 200 bytes, 64 to a part."""
+    data = bytes(range(200))
+    return Bundle(
+        data=data,
+        sha256="a" * 64,
+        filename="Team-run-model_500.zip",
+        included=["checkpoint/model_500.pt", "teamcode/env.py"],
+        skipped=[],
+    )
+
+
+def test_the_policy_is_uploaded_against_the_submission_it_belongs_to(
+    configured, report, board, bundle
+):
+    outcome = submit(report, bundle=bundle)
+
+    assert outcome.uploaded
+    parts = [call for call in board.artifact_calls if not call.get("complete")]
+    assert [call["part"] for call in parts] == [0, 1, 2, 3]
+    # Every part carries the id the board handed back when the lap was stored:
+    # that is the only thing tying a policy to the run it belongs to.
+    assert {call["submission_id"] for call in board.artifact_calls} == {
+        "0bb1e1ba-0000-4000-8000-000000000001"
+    }
+
+
+def test_the_parts_reassemble_into_the_bundle_byte_for_byte(
+    configured, report, board, bundle
+):
+    submit(report, bundle=bundle)
+
+    parts = [call for call in board.artifact_calls if not call.get("complete")]
+    rebuilt = b"".join(
+        base64.b64decode(call["data"])
+        for call in sorted(parts, key=lambda c: c["part"])
+    )
+    assert rebuilt == bundle.data
+
+
+def test_the_upload_is_closed_with_the_hash_the_organiser_will_check(
+    configured, report, board, bundle
+):
+    submit(report, bundle=bundle)
+    closing = [call for call in board.artifact_calls if call.get("complete")]
+
+    assert len(closing) == 1
+    assert closing[0]["sha256"] == bundle.sha256
+    assert closing[0]["bytes"] == 200
+    assert closing[0]["parts"] == 4
+    assert closing[0]["filename"] == "Team-run-model_500.zip"
+
+
+def test_the_part_size_is_the_board_s_limit_not_the_client_s_guess(
+    configured, report, board, bundle
+):
+    """The board knows its own request limit and says so; the client obeys it."""
+    submit(report, bundle=bundle)
+    parts = [call for call in board.artifact_calls if not call.get("complete")]
+
+    assert all(len(base64.b64decode(call["data"])) <= 64 for call in parts)
+
+
+def test_a_lap_published_without_a_policy_says_it_cannot_be_verified(
+    configured, report, board, capsys
+):
+    outcome = submit(report)
+    print_outcome(outcome)
+
+    assert not outcome.uploaded
+    assert board.artifact_calls == []
+    assert "cannot be verified" in capsys.readouterr().out
+
+
+def test_a_bundle_bigger_than_the_board_takes_is_not_sent(configured, report, board):
+    huge = Bundle(
+        data=b"x" * 5000, sha256="b" * 64, filename="big.zip", included=[], skipped=[]
+    )
+    outcome = submit(report, bundle=huge)
+
+    assert outcome.sent, "the lap is published either way"
+    assert not outcome.uploaded
+    assert board.artifact_calls == []
+    assert "did not upload" in outcome.upload_message
+
+
+def test_a_failed_upload_does_not_lose_the_lap(monkeypatch, tmp_path, report, bundle):
+    board = FakeBoard(artifact_status=500)
+    try:
+        monkeypatch.setenv("LITUANICAX_TEAM", "T")
+        monkeypatch.setenv("LITUANICAX_LEADERBOARD_URL", board.url)
+        monkeypatch.setattr(
+            submit_module, "_config_file", lambda: tmp_path / "absent.json"
+        )
+
+        outcome = submit(report, bundle=bundle)
+    finally:
+        board.close()
+
+    assert outcome.sent and not outcome.uploaded
+    assert "did not upload" in outcome.upload_message
+
+
+def test_an_ineligible_lap_is_not_asked_for_a_policy(configured, report, board, bundle):
+    """A lap from a modified SDK will not be re-run, so the zip stays at home."""
+    report["sdk_modified"] = ["vehicle.py"]
+    outcome = submit(report, bundle=bundle)
+
+    assert outcome.sent and not outcome.uploaded
+    assert board.artifact_calls == []
+
+
+def test_a_pending_lap_prints_the_claim_and_what_it_is_waiting_for(
+    configured, report, bundle, capsys
+):
+    print_outcome(submit(report, bundle=bundle))
+    printed = capsys.readouterr().out
+
+    assert "42.137 s" in printed
+    assert "awaiting verification" in printed
+    assert "would be P1" in printed
+    assert "organisers reproduce it" in printed

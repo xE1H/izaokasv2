@@ -57,6 +57,8 @@ import os
 import shutil
 import subprocess
 import sys
+import threading
+import time
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
@@ -78,6 +80,17 @@ TIMEOUT_S = 120.0
 #: it.
 RUN_TIMEOUT_S = 1800.0
 
+#: How long a finished run's output is given to drain before whatever is still
+#: holding the pipe is treated as a leftover rather than as the run. Generous
+#: for a pipe that only has to flush; nothing to a run that has already ended.
+PIPE_DRAIN_S = 10.0
+
+#: How long a run gets to shut down *after* it has written its report. The
+#: benchmark gives its own teardown 60s before force-exiting, so this is that
+#: plus room for the force-exit to happen — past it, the shutdown is wedged in
+#: a way the run itself cannot escape, and the queue stops waiting.
+SHUTDOWN_GRACE_S = 90.0
+
 
 class VerificationError(RuntimeError):
     """Anything that stops one lap being checked. Never stops the others."""
@@ -96,16 +109,30 @@ class Organiser:
 
 @dataclass(frozen=True)
 class Rerun:
-    """What this machine got out of a team's policy."""
+    """What this machine got out of a team's policy.
+
+    ``sdk_before`` and ``sdk_after`` are the SDK's own critical code, hashed in
+    the run's process before the team's code was imported and again once the
+    driving was done. They are produced by *this* machine's SDK during *this*
+    run, so nothing in the bundle can influence them.
+    """
 
     lap_time_s: float | None
-    runtime_fingerprint: str | None
     report: dict
     workspace: Path
+    sdk_before: str | None = None
+    sdk_after: str | None = None
 
     @property
     def drove_a_lap(self) -> bool:
         return self.lap_time_s is not None
+
+    @property
+    def sdk_was_replaced(self) -> bool:
+        """True when the team's code changed the SDK's behaviour as it ran."""
+        if self.sdk_before is None or self.sdk_after is None:
+            return False
+        return self.sdk_before != self.sdk_after
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -320,38 +347,189 @@ def rerun_bundle(data: bytes, workspace: Path, *, headless: bool = True) -> Reru
     }
 
     print(f"    running {' '.join(command[3:])}")
-    try:
-        finished = subprocess.run(
-            command,
-            cwd=workspace,
-            env=environment,
-            timeout=RUN_TIMEOUT_S,
-            capture_output=True,
-            text=True,
-        )
-    except FileNotFoundError as exc:  # pragma: no cover — a broken interpreter
-        raise VerificationError(f"could not start the benchmark: {exc}") from exc
-    except subprocess.TimeoutExpired as exc:
-        raise VerificationError(
-            f"the benchmark did not finish within {RUN_TIMEOUT_S / 60:.0f} minutes."
-        ) from exc
-
-    (workspace / "benchmark.log").write_text(finished.stdout + finished.stderr)
+    status, output = run_benchmark(
+        command,
+        cwd=workspace,
+        env=environment,
+        log=workspace / "benchmark.log",
+        # The report is the run's real finishing line. What happens after it is
+        # the simulator shutting down, which is not verification's problem.
+        done_when=out,
+    )
 
     if not out.is_file():
-        tail = "\n".join((finished.stdout + finished.stderr).strip().splitlines()[-15:])
+        tail = "\n".join(output.strip().splitlines()[-15:])
         raise VerificationError(
-            f"the benchmark wrote no report (exit {finished.returncode}). "
-            f"Last lines:\n{tail}"
+            f"the benchmark wrote no report (exit {status}).\nLast lines:\n{tail}"
         )
 
     report = json.loads(out.read_text())
     return Rerun(
         lap_time_s=report.get("best_lap_time_s"),
-        runtime_fingerprint=report.get("runtime_fingerprint"),
         report=report,
         workspace=workspace,
+        sdk_before=report.get("runtime_fingerprint_at_import"),
+        sdk_after=report.get("runtime_fingerprint"),
     )
+
+
+def run_benchmark(
+    command: list[str],
+    *,
+    cwd: Path,
+    env: dict,
+    log: Path,
+    timeout: float = RUN_TIMEOUT_S,
+    done_when: Path | None = None,
+    shutdown_grace: float = SHUTDOWN_GRACE_S,
+) -> tuple[int, str]:
+    """Run one benchmark to completion, showing what it is doing.
+
+        Three things here are load-bearing, and all three were learned the hard way.
+
+    **The run is over when the report is written, not when the process exits,
+        and certainly not when its output ends.** Isaac Sim's teardown does not
+        reliably return, and when it hangs it hangs holding the GIL, so the
+        benchmark's own escape hatch cannot always fire either. Meanwhile the lap
+        has been driven, scored and written to disk. Waiting on the process — let
+        alone on end-of-output, which is what ``subprocess.run`` does and which a
+        leftover holding the pipe can defer for ever — turns a finished measurement
+        into a hang with a blank terminal and an idle GPU. So ``done_when`` is
+        watched, the process is given a grace period after it appears to shut down
+        tidily, and then it is stopped.
+
+        **The output is streamed, not captured.** A verification run is minutes of
+        simulator start-up; an organiser watching a blank terminal cannot tell that
+        from a hang. Every line goes to the screen as it arrives, and to
+        ``benchmark.log`` for afterwards.
+
+        **Nothing can ask a question.** stdin is closed, so a prompt fails the run
+        loudly instead of blocking it silently and invisibly.
+
+        Returns:
+            The exit status and everything the run printed.
+    """
+    try:
+        process = subprocess.Popen(  # noqa: S603 — the command is built above
+            command,
+            cwd=cwd,
+            env=env,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            # The simulator's output is not reliably UTF-8 — a stray byte from a
+            # driver or an extension is enough — and a decode error would kill
+            # the reader, taking the rest of the run's output with it.
+            errors="replace",
+            bufsize=1,
+            # Its own process group, so any straggler can be cleaned up without
+            # signalling the organiser's own shell.
+            start_new_session=True,
+        )
+    except (OSError, FileNotFoundError) as exc:
+        raise VerificationError(f"could not start the benchmark: {exc}") from exc
+
+    lines: list[str] = []
+
+    def pump() -> None:
+        for line in process.stdout:  # type: ignore[union-attr]
+            lines.append(line)
+            print(f"    │ {line.rstrip()}", flush=True)
+
+    reader = threading.Thread(target=pump, daemon=True)
+    reader.start()
+
+    started = time.monotonic()
+    status, stopped = _await_end(
+        process, timeout=timeout, done_when=done_when, shutdown_grace=shutdown_grace
+    )
+    if status is None:
+        _write_log(log, lines)
+        raise VerificationError(
+            f"the benchmark did not finish within {timeout / 60:.0f} minutes."
+        )
+
+    # The process is gone. Give its output a moment to drain, then stop caring:
+    # anything still holding the pipe is a leftover of the simulator's, and it
+    # is not a reason to hold up the queue.
+    reader.join(timeout=PIPE_DRAIN_S)
+    if reader.is_alive():
+        print("    │ (the simulator left something behind holding the output)")
+        _stop(process)
+
+    _write_log(log, lines)
+    how = "stopped by us after it scored the lap" if stopped else f"exit {status}"
+    print(f"    finished in {time.monotonic() - started:.0f}s ({how})")
+    return status, "".join(lines)
+
+
+def _await_end(
+    process: subprocess.Popen,
+    *,
+    timeout: float,
+    done_when: Path | None,
+    shutdown_grace: float,
+) -> tuple[int | None, bool]:
+    """Wait for the run to be over. Returns ``(status, did we stop it)``.
+
+    Over means one of two things: the process exited, or it wrote its report and
+    then spent longer than ``shutdown_grace`` failing to exit. The second is the
+    simulator's teardown deadlock — the lap is already scored and on disk, and
+    nothing is gained by keeping the queue waiting for a process that is only
+    going to hold the GPU.
+
+    ``status`` is None when the whole run ran out of time, which is a different
+    thing entirely: nothing was measured.
+    """
+    started = time.monotonic()
+    reported_at: float | None = None
+
+    while True:
+        try:
+            return process.wait(timeout=1.0), False
+        except subprocess.TimeoutExpired:
+            pass
+
+        now = time.monotonic()
+        if reported_at is None and done_when is not None and done_when.is_file():
+            reported_at = now
+            print("    │ (the lap is scored and written; letting it shut down)")
+
+        if reported_at is not None and now - reported_at > shutdown_grace:
+            print(
+                f"    the simulator has not shut down {shutdown_grace:.0f}s after "
+                "the lap was scored, so this stops it. The result is unaffected."
+            )
+            _stop(process)
+            return process.poll(), True
+
+        if now - started > timeout:
+            _stop(process)
+            return None, True
+
+
+def _stop(process: subprocess.Popen) -> None:
+    """End the run's whole process group, politely and then not."""
+    import signal
+
+    for sig in (signal.SIGTERM, signal.SIGKILL):
+        try:
+            os.killpg(os.getpgid(process.pid), sig)
+        except (ProcessLookupError, PermissionError, OSError):
+            return
+        try:
+            process.wait(timeout=10)
+            return
+        except subprocess.TimeoutExpired:
+            continue
+
+
+def _write_log(log: Path, lines: list[str]) -> None:
+    try:
+        log.write_text("".join(lines))
+    except OSError:  # pragma: no cover — a full or read-only disk
+        pass
 
 
 def _checkpoint_in(workspace: Path, manifest: dict) -> Path:
@@ -365,38 +543,6 @@ def _checkpoint_in(workspace: Path, manifest: dict) -> Path:
     return found[0]
 
 
-def clean_runtime_fingerprint() -> str | None:
-    """What this SDK's critical code hashes to with no team code in the process.
-
-    Computed in a fresh interpreter, importing the same modules the benchmark
-    does but nothing of the team's, so it is the honest baseline to compare a
-    run's own fingerprint against. Returns None if it cannot be computed, in
-    which case the check is reported as unavailable rather than as a failure —
-    the modules it needs are not importable without Isaac Sim on every machine.
-    """
-    from .runs import project_root
-
-    script = (
-        "import lituanicax_sdk.dynamics, lituanicax_sdk.rules, lituanicax_sdk.timing, "
-        "lituanicax_sdk.vehicle, lituanicax_sdk.track, lituanicax_sdk.env;"
-        "from lituanicax_sdk._locked import runtime_fingerprint;"
-        "print(runtime_fingerprint())"
-    )
-    try:
-        finished = subprocess.run(
-            [sys.executable, "-c", script],
-            cwd=project_root(),
-            capture_output=True,
-            text=True,
-            timeout=300,
-        )
-    except (OSError, subprocess.TimeoutExpired):
-        return None
-    return (
-        finished.stdout.strip().splitlines()[-1] if finished.returncode == 0 else None
-    )
-
-
 # ═══════════════════════════════════════════════════════════════════════════
 #  The command
 # ═══════════════════════════════════════════════════════════════════════════
@@ -406,7 +552,6 @@ def verify_one(
     organiser: Organiser,
     submission: dict,
     *,
-    baseline: str | None,
     dry_run: bool = False,
     headless: bool = True,
     workspace_root: Path | None = None,
@@ -430,7 +575,7 @@ def verify_one(
         drift = rerun.lap_time_s - claimed
         print(f"    this machine got {rerun.lap_time_s:.3f} s ({drift:+.3f})")
 
-    note = _tamper_note(rerun, baseline)
+    note = _tamper_note(rerun)
     if note:
         print(f"    {note}")
 
@@ -443,21 +588,28 @@ def verify_one(
     return "verified" if answer.get("ranked") else "rejected"
 
 
-def _tamper_note(rerun: Rerun, baseline: str | None) -> str:
-    """One line about whether the run's SDK behaved like an unmodified one.
+def _tamper_note(rerun: Rerun) -> str:
+    """One line about whether the team's code left the SDK alone.
 
-    A mismatch does not by itself reject the lap — the board decides that on the
-    lap time — but it goes in the note, because a run whose SDK was patched in
-    memory is one to look at whatever number came out of it.
+    The run hashes the SDK's critical code before importing any of the team's,
+    and again once the lap is driven. A difference means something replaced the
+    crash rules, the clocks or a locked constant while the lap was being set —
+    which no file hash can see, since no file changed.
+
+    It does not by itself reject the lap; the board decides that on the time.
+    But it goes in the note, because a lap set under a rewritten SDK is one to
+    look at whatever number came out of it.
     """
-    if baseline is None or rerun.runtime_fingerprint is None:
-        return ""
-    if rerun.runtime_fingerprint == baseline:
+    if rerun.sdk_before is None or rerun.sdk_after is None:
+        return (
+            "note: this run did not report what the SDK hashed to; it is an old bundle."
+        )
+    if not rerun.sdk_was_replaced:
         return ""
     return (
-        f"WARNING: the SDK behaved differently under this team's code "
-        f"({rerun.runtime_fingerprint} against a clean {baseline}) — read teamcode/ "
-        "before accepting this lap."
+        f"WARNING: this team's code changed the SDK's behaviour as it ran "
+        f"({rerun.sdk_before} before importing teamcode, {rerun.sdk_after} after "
+        "the lap) — read teamcode/ before accepting this lap."
     )
 
 
@@ -547,12 +699,6 @@ def main(argv: list[str] | None = None) -> int:
             print(f"[verify] {orphans} lap(s) came with no policy and never can be.")
         return 0
 
-    baseline = clean_runtime_fingerprint()
-    if baseline is None:
-        print(
-            "[verify] could not fingerprint a clean SDK here; the tamper check is off."
-        )
-
     root = Path(args.workspace) if args.workspace else None
     outcomes: list[str] = []
     failed = 0
@@ -563,7 +709,6 @@ def main(argv: list[str] | None = None) -> int:
                 verify_one(
                     organiser,
                     submission,
-                    baseline=baseline,
                     dry_run=args.dry_run,
                     headless=not args.windowed,
                     workspace_root=root,

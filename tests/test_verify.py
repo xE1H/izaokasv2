@@ -12,8 +12,10 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
-import subprocess
+import os
+import sys
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 import pytest
@@ -263,20 +265,25 @@ def fake_benchmark(monkeypatch, tmp_path):
     """Stand in for Isaac Sim: record the command, write the report it would."""
     calls = {}
 
-    def run(command, *, cwd, env, timeout, capture_output, text):
+    def run(command, *, cwd, env, log, timeout=None, done_when=None, **rest):
         calls["command"] = command
         calls["cwd"] = cwd
         calls["env"] = env
         out = command[command.index("--out") + 1]
         report = calls.get(
-            "report", {"best_lap_time_s": 15.2, "runtime_fingerprint": "aaaaaaaaaaaa"}
+            "report",
+            {
+                "best_lap_time_s": 15.2,
+                "runtime_fingerprint_at_import": "aaaaaaaaaaaa",
+                "runtime_fingerprint": "aaaaaaaaaaaa",
+            },
         )
         if report is not None:
             with open(out, "w") as handle:
                 json.dump(report, handle)
-        return subprocess.CompletedProcess(command, 0, "benchmark output\n", "")
+        return 0, "benchmark output\n"
 
-    monkeypatch.setattr(verify_module.subprocess, "run", run)
+    monkeypatch.setattr(verify_module, "run_benchmark", run)
     return calls
 
 
@@ -316,7 +323,7 @@ def test_the_rerun_reports_the_lap_this_machine_got(
 
     assert rerun.drove_a_lap
     assert rerun.lap_time_s == pytest.approx(15.2)
-    assert rerun.runtime_fingerprint == "aaaaaaaaaaaa"
+    assert not rerun.sdk_was_replaced
 
 
 def test_a_policy_that_completes_no_lap_is_a_result_not_an_error(
@@ -354,9 +361,13 @@ def test_the_workspace_is_rebuilt_rather_than_merged(
 # ═══════════════════════════════════════════════════════════════════════════
 
 
-def rerun_of(lap, fingerprint="aaaaaaaaaaaa", tmp_path=None):
+def rerun_of(lap, before="aaaaaaaaaaaa", after="aaaaaaaaaaaa", tmp_path=None):
     return Rerun(
-        lap_time_s=lap, runtime_fingerprint=fingerprint, report={}, workspace=tmp_path
+        lap_time_s=lap,
+        report={},
+        workspace=tmp_path,
+        sdk_before=before,
+        sdk_after=after,
     )
 
 
@@ -375,19 +386,23 @@ def test_no_lap_posts_a_rejection(organiser, board):
     assert board.verdicts[-1]["note"] == "the policy crashed"
 
 
-def test_an_sdk_that_behaved_differently_is_flagged():
-    note = _tamper_note(rerun_of(15.2, "deadbeefdead"), baseline="aaaaaaaaaaaa")
+def test_team_code_that_rewrites_the_sdk_is_flagged():
+    """The run hashes the SDK before importing teamcode and after the lap."""
+    note = _tamper_note(rerun_of(15.2, before="aaaaaaaaaaaa", after="deadbeefdead"))
 
     assert "WARNING" in note
     assert "deadbeefdead" in note and "aaaaaaaaaaaa" in note
 
 
 def test_an_untouched_sdk_says_nothing():
-    assert _tamper_note(rerun_of(15.2, "aaaaaaaaaaaa"), baseline="aaaaaaaaaaaa") == ""
+    assert _tamper_note(rerun_of(15.2)) == ""
 
 
-def test_the_check_is_skipped_rather_than_failed_when_there_is_no_baseline():
-    assert _tamper_note(rerun_of(15.2, "deadbeefdead"), baseline=None) == ""
+def test_a_bundle_too_old_to_report_it_says_so_rather_than_passing_quietly():
+    note = _tamper_note(rerun_of(15.2, before=None, after=None))
+
+    assert "old bundle" in note
+    assert "WARNING" not in note
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -416,9 +431,6 @@ def test_a_dry_run_re_runs_the_lap_and_posts_nothing(
     board, monkeypatch, fake_benchmark, tmp_path, capsys
 ):
     monkeypatch.setenv("LEADERBOARD_ADMIN_TOKEN", TOKEN)
-    monkeypatch.setattr(
-        verify_module, "clean_runtime_fingerprint", lambda: "aaaaaaaaaaaa"
-    )
 
     code = main(
         [
@@ -440,9 +452,6 @@ def test_verifying_one_lap_posts_what_this_machine_measured(
     board, monkeypatch, fake_benchmark, tmp_path, capsys
 ):
     monkeypatch.setenv("LEADERBOARD_ADMIN_TOKEN", TOKEN)
-    monkeypatch.setattr(
-        verify_module, "clean_runtime_fingerprint", lambda: "aaaaaaaaaaaa"
-    )
 
     code = main([SUBMISSION, "--url", board.url, "--workspace", str(tmp_path / "ws")])
 
@@ -467,9 +476,6 @@ def test_the_whole_queue_is_verified_by_default(
         "id-charlie": ("Charlie", 17.9, True),
     }
     monkeypatch.setenv("LEADERBOARD_ADMIN_TOKEN", TOKEN)
-    monkeypatch.setattr(
-        verify_module, "clean_runtime_fingerprint", lambda: "aaaaaaaaaaaa"
-    )
 
     code = main(["--url", board.url, "--workspace", str(tmp_path / "ws")])
 
@@ -487,9 +493,6 @@ def test_a_lap_with_no_policy_is_left_alone_and_counted(
         "id-bravo": ("Bravo", 16.4, False),
     }
     monkeypatch.setenv("LEADERBOARD_ADMIN_TOKEN", TOKEN)
-    monkeypatch.setattr(
-        verify_module, "clean_runtime_fingerprint", lambda: "aaaaaaaaaaaa"
-    )
 
     main(["--url", board.url, "--workspace", str(tmp_path / "ws")])
     printed = capsys.readouterr().out
@@ -507,7 +510,6 @@ def test_one_broken_bundle_does_not_stop_the_queue(
     }
     board.claimed_sha = "0" * 64  # every download will fail its hash check
     monkeypatch.setenv("LEADERBOARD_ADMIN_TOKEN", TOKEN)
-    monkeypatch.setattr(verify_module, "clean_runtime_fingerprint", lambda: None)
 
     code = main(["--url", board.url, "--workspace", str(tmp_path / "ws")])
     printed = capsys.readouterr().out
@@ -568,3 +570,190 @@ def test_a_local_board_over_http_is_fine(monkeypatch):
 
     assert load_organiser("http://127.0.0.1:8888").token == TOKEN
     assert load_organiser("http://localhost:8888").token == TOKEN
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+#  Running one, for real
+# ═══════════════════════════════════════════════════════════════════════════
+#
+# No Isaac Sim here — a few lines of Python standing in for it. What is being
+# tested is the plumbing around the run, which is where verification has
+# actually gone wrong: a benchmark that finishes and then leaves the terminal
+# blank for ever.
+
+
+def script(body: str) -> list[str]:
+    return [sys.executable, "-u", "-c", body]
+
+
+def test_a_run_is_streamed_as_it_happens_and_kept(tmp_path, capsys):
+    log = tmp_path / "benchmark.log"
+    status, output = verify_module.run_benchmark(
+        script("print('starting the simulator'); print('lap 15.204')"),
+        cwd=tmp_path,
+        env=dict(os.environ),
+        log=log,
+    )
+
+    assert status == 0
+    assert "lap 15.204" in output
+    # On the organiser's screen while it runs, not only in the file afterwards.
+    assert "lap 15.204" in capsys.readouterr().out
+    assert "starting the simulator" in log.read_text()
+
+
+def test_stderr_is_shown_too(tmp_path, capsys):
+    """Isaac Sim says most of what matters, including its failures, on stderr."""
+    verify_module.run_benchmark(
+        script("import sys; print('to stderr', file=sys.stderr)"),
+        cwd=tmp_path,
+        env=dict(os.environ),
+        log=tmp_path / "benchmark.log",
+    )
+    assert "to stderr" in capsys.readouterr().out
+
+
+def test_a_finished_run_does_not_wait_for_what_the_simulator_left_behind(
+    tmp_path, monkeypatch
+):
+    """The regression this exists for.
+
+    Isaac Sim's teardown does not reliably return, so the benchmark force-exits
+    — and the helpers it leaves behind inherited the output pipe. Waiting for
+    the output to end therefore waits on a straggler that may never close it:
+    the lap is scored, the report is written, and verification hangs with the
+    terminal blank and the GPU idle. It has to wait on the *process*.
+    """
+    monkeypatch.setattr(verify_module, "PIPE_DRAIN_S", 0.5)
+    started = time.monotonic()
+
+    status, _ = verify_module.run_benchmark(
+        script(
+            "import subprocess, sys;"
+            # A child that inherits stdout and outlives its parent, exactly as
+            # the simulator's leftovers do.
+            "subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)']);"
+            "print('report written'); sys.exit(0)"
+        ),
+        cwd=tmp_path,
+        env=dict(os.environ),
+        log=tmp_path / "benchmark.log",
+    )
+    elapsed = time.monotonic() - started
+
+    assert status == 0
+    assert elapsed < 20, f"waited {elapsed:.0f}s for a straggler to close a pipe"
+
+
+def test_a_run_that_asks_a_question_fails_instead_of_hanging(tmp_path):
+    """A prompt nobody can see is the worst way for a run to stop."""
+    status, output = verify_module.run_benchmark(
+        script("print(input('accept the licence? '))"),
+        cwd=tmp_path,
+        env=dict(os.environ),
+        log=tmp_path / "benchmark.log",
+        timeout=30,
+    )
+
+    assert status != 0
+    assert "EOFError" in output or "EOF when reading" in output
+
+
+def test_a_run_that_never_finishes_is_stopped_and_reported(tmp_path):
+    with pytest.raises(VerificationError, match="did not finish"):
+        verify_module.run_benchmark(
+            script("import time; time.sleep(120)"),
+            cwd=tmp_path,
+            env=dict(os.environ),
+            log=tmp_path / "benchmark.log",
+            timeout=1,
+        )
+    # And it is not still running after that.
+    assert (tmp_path / "benchmark.log").exists()
+
+
+def test_a_command_that_does_not_exist_is_reported(tmp_path):
+    with pytest.raises(VerificationError, match="could not start"):
+        verify_module.run_benchmark(
+            ["/definitely/not/a/binary"],
+            cwd=tmp_path,
+            env=dict(os.environ),
+            log=tmp_path / "benchmark.log",
+        )
+
+
+def test_a_scored_lap_is_not_held_hostage_by_a_wedged_shutdown(tmp_path, capsys):
+    """The failure this was found by, in miniature.
+
+    Isaac Sim's teardown can hang holding the GIL, which stops the benchmark's
+    own escape hatch from running: the lap is driven, scored and written, and
+    then the process sits there at a few percent of one core for ever. The
+    measurement is on disk by that point, so verification takes it and moves on
+    rather than waiting for a shutdown that is never coming.
+    """
+    report = tmp_path / "verified.json"
+    started = time.monotonic()
+
+    status, _ = verify_module.run_benchmark(
+        script(
+            "import json, sys, time;"
+            f"open({str(report)!r}, 'w')"
+            ".write(json.dumps({'best_lap_time_s': 15.2}));"
+            "print('SUBMISSION 15.200 s', flush=True);"
+            # The teardown that never returns.
+            "time.sleep(600)"
+        ),
+        cwd=tmp_path,
+        env=dict(os.environ),
+        log=tmp_path / "benchmark.log",
+        done_when=report,
+        shutdown_grace=2,
+    )
+    elapsed = time.monotonic() - started
+    printed = capsys.readouterr().out
+
+    assert elapsed < 30, f"waited {elapsed:.0f}s for a shutdown that never comes"
+    assert report.is_file(), "and the lap it scored is what matters"
+    assert "has not shut down" in printed
+    assert status != 0, "a run we had to stop is not a clean exit"
+
+
+def test_a_tidy_shutdown_is_waited_for(tmp_path):
+    """A run that ends properly is not killed for being a second slow."""
+    report = tmp_path / "verified.json"
+
+    status, _ = verify_module.run_benchmark(
+        script(
+            "import json, time;"
+            f"open({str(report)!r}, 'w')"
+            ".write(json.dumps({'best_lap_time_s': 15.2}));"
+            "time.sleep(1.5)"
+        ),
+        cwd=tmp_path,
+        env=dict(os.environ),
+        log=tmp_path / "benchmark.log",
+        done_when=report,
+        shutdown_grace=30,
+    )
+
+    assert status == 0
+
+
+def test_output_that_is_not_utf8_does_not_lose_the_rest_of_the_run(tmp_path, capsys):
+    """The simulator emits the occasional stray byte; the log must survive it."""
+    status, output = verify_module.run_benchmark(
+        script(
+            "import sys;"
+            r"sys.stdout.buffer.write(b'before \xe3\n');"
+            "sys.stdout.buffer.flush();"
+            "print('after')"
+        ),
+        cwd=tmp_path,
+        env=dict(os.environ),
+        log=tmp_path / "benchmark.log",
+    )
+
+    assert status == 0
+    assert "after" in output, "a bad byte early on must not swallow what follows"
+    assert "after" in (tmp_path / "benchmark.log").read_text()
+    assert "Traceback" not in capsys.readouterr().out

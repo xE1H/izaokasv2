@@ -84,9 +84,8 @@ import argparse
 import json
 import math
 import os
+import subprocess
 import sys
-import threading
-import time
 
 os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
 
@@ -190,7 +189,8 @@ from isaaclab_rl.rsl_rl import (  # noqa: E402
 from isaaclab_tasks.utils.hydra import hydra_task_config  # noqa: E402
 from rsl_rl.runners import OnPolicyRunner  # noqa: E402
 
-import teamcode  # noqa: F401, E402 — importing registers the task
+# The SDK is imported first, and fingerprinted before any team code has run.
+# The order is the whole point: see SDK_AT_IMPORT below.
 from lituanicax_sdk import (  # noqa: E402
     RaceEnv,
     RaceEnvCfg,
@@ -200,10 +200,24 @@ from lituanicax_sdk import (  # noqa: E402
 )
 from lituanicax_sdk._locked import runtime_fingerprint  # noqa: E402
 from lituanicax_sdk.bundle import BundleError, build_bundle  # noqa: E402
+from lituanicax_sdk.env import RaceEnv as _RaceEnv  # noqa: E402, F401 — loads env
 from lituanicax_sdk.runs import find_checkpoint  # noqa: E402
 from lituanicax_sdk.spawn import SpawnManager  # noqa: E402
 from lituanicax_sdk.submit import print_outcome, submit  # noqa: E402
 from lituanicax_sdk.timing import AttemptTimer  # noqa: E402
+
+#: What the SDK's competition-critical code hashes to *before any team code has
+#: been imported*, taken in this process, in this run.
+#:
+#: The file hashes cannot see the cheat this catches. ``teamcode`` is imported
+#: into this same interpreter, and a few lines in its ``__init__`` can replace
+#: the crash rules or move a locked constant — no file changes, so
+#: ``sdk_fingerprint()`` is untouched, because the files were never what ran.
+#: Comparing this against the same hash taken after the driving is done catches
+#: it, and needs nothing but the two lines around this one.
+SDK_AT_IMPORT = runtime_fingerprint()
+
+import teamcode  # noqa: F401, E402 — importing registers the task, and runs it
 
 #: A failed attempt has no lap time.
 NO_LAP = float("inf")
@@ -425,10 +439,11 @@ def build_report(
         "spawn": spawn.describe(),
         "checkpoint": str(checkpoint),
         "sdk_fingerprint": sdk_fingerprint(),
-        # Read after the driving rather than before it, and after `teamcode` has
-        # had every chance to touch the SDK: this is what the code the lap was
-        # actually set under hashes to in memory. The organisers compare it with
-        # a clean process of their own. See _locked.runtime_fingerprint.
+        # The SDK's own code, hashed in memory before any team code was imported
+        # and again now that the driving is over. Equal means the rules that ran
+        # are the rules that shipped; different means something replaced them
+        # while the lap was being set. See SDK_AT_IMPORT.
+        "runtime_fingerprint_at_import": SDK_AT_IMPORT,
         "runtime_fingerprint": runtime_fingerprint(),
         "sdk_modified": modified,
     }
@@ -512,22 +527,53 @@ def close_or_bail(env) -> None:
     So the shutdown gets a deadline. Everything worth keeping is on disk and
     already sent before the timer is armed, which is what makes exiting hard
     safe rather than merely convenient.
+
+    **The deadline is kept by another process, and it has to be.** The obvious
+    way to write this is a watchdog thread that sleeps and then exits the
+    process, and it does not work: the teardown blocks inside the simulator's
+    own C++ code *without releasing the GIL*, so from the moment it hangs no
+    Python in this interpreter runs again — not the watchdog, not a signal
+    handler, nothing. The symptom is a benchmark that prints its score, writes
+    its report, and then sits there for ever at a few percent of one core. A
+    separate process needs no GIL, so that is what keeps the time.
     """
+    watchdog = _arm_watchdog()
+    try:
+        env.close()
+        simulation_app.close()
+    finally:
+        # Disarmed explicitly rather than left to die with us: a watchdog that
+        # outlived this process would eventually signal whatever PID the kernel
+        # handed out next.
+        if watchdog is not None:
+            watchdog.kill()
 
-    def bail() -> None:
-        time.sleep(SHUTDOWN_GRACE_S)
-        print(
-            f"\n[benchmark] the simulator has not shut down after "
-            f"{SHUTDOWN_GRACE_S:g}s, so this exits without waiting for it. "
-            "Your result is unaffected: it is printed above, written to "
-            "submission.json, and already published."
-        )
-        sys.stdout.flush()
-        # Not sys.exit(): that unwinds through the same teardown that is stuck.
-        os._exit(0)
 
-    threading.Thread(target=bail, daemon=True).start()
-    env.close()
+def _arm_watchdog():
+    """Start the process that kills this one if the shutdown never returns.
+
+    It prints the explanation itself, on the terminal it inherits, because by
+    the time it fires this process can no longer print anything.
+    """
+    message = (
+        f"\\n[benchmark] the simulator has not shut down after "
+        f"{SHUTDOWN_GRACE_S:g}s, so this exits without waiting for it. "
+        "Your result is unaffected: it is printed above, written to "
+        "submission.json, and already published."
+    )
+    code = (
+        "import os, signal, sys, time\n"
+        f"time.sleep({SHUTDOWN_GRACE_S})\n"
+        f'print("{message}", flush=True)\n'
+        # SIGKILL, not SIGTERM: a process wedged in a C++ lock does not run
+        # handlers either.
+        f"os.kill({os.getpid()}, signal.SIGKILL)\n"
+    )
+    try:
+        return subprocess.Popen([sys.executable, "-c", code])
+    except OSError as exc:  # pragma: no cover — no interpreter to spawn
+        print(f"[benchmark] could not arm the shutdown watchdog: {exc}")
+        return None
 
 
 def publish(report: dict, checkpoint) -> None:
@@ -572,4 +618,7 @@ if __name__ == "__main__":
     # Hydra fills in env_cfg and agent_cfg; the decorator hides that from static
     # analysis, so main() genuinely does take no arguments here.
     main()  # type: ignore[call-arg]
-    simulation_app.close()
+    # The simulator is closed inside main(), under the watchdog that gives the
+    # shutdown a deadline — see close_or_bail. Closing it again here would be a
+    # second teardown outside that deadline, which is the one thing this file
+    # has learned not to do.

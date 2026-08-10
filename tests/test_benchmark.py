@@ -106,11 +106,15 @@ def test_no_submit_skips_publishing(module):
 def test_shutdown_cannot_hold_the_process_open(module):
     """Isaac Sim's teardown does not reliably return; the run must end anyway."""
     assert "close_or_bail" in calls_in(function(module, "main"))
+    assert "_arm_watchdog" in calls_in(function(module, "close_or_bail"))
 
-    bail = function(module, "close_or_bail")
-    source = ast.dump(bail)
-    assert "Thread" in source, "close_or_bail() arms no watchdog"
-    assert "_exit" in source, "a stuck teardown needs os._exit, not sys.exit"
+    watchdog = ast.dump(function(module, "_arm_watchdog"))
+    # A *process*, not a thread. The teardown hangs inside the simulator's C++
+    # without releasing the GIL, so no Python in this interpreter runs again —
+    # a watchdog thread sleeps through the very thing it is watching for.
+    assert "Popen" in watchdog, "the watchdog is not a separate process"
+    assert "Thread" not in watchdog, "a thread cannot outlive a held GIL"
+    assert "SIGKILL" in watchdog, "a wedged process does not run signal handlers"
 
 
 def test_the_result_is_safe_before_the_deadline_is_armed(module):

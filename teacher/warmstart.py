@@ -42,7 +42,7 @@ from tools.profile import (
     widest_achievable_radius,
 )
 
-from .params import LINE_POINTS, SPEED_POINTS, ControllerParams
+from .params import LINE_POINTS, SCALAR_BOUNDS, SPEED_POINTS, ControllerParams
 
 DEFAULT_PATH = Path("artifacts/teacher-warmstart.json")
 
@@ -112,6 +112,20 @@ TRACKING_MARGIN_M = 0.10
 #: full figure. Bounded by ``SCALAR_BOUNDS['a_lat_eff']`` and free for the
 #: search to raise once it is being paid for in lap time.
 ROLLOVER_MARGIN = 0.75
+
+
+def _within(name: str, value: float) -> float:
+    """Clip a derived starting value into the bound the search will enforce.
+
+    Every scalar here is computed from a measurement and then adjusted — scaled
+    by a safety margin, inverted from a radius — and any of those can leave the
+    range the parameter is allowed to take. ``kappa_max_eff`` is the one that
+    actually did it: on a gentle track the flattest line the corridor allows has
+    a radius of several metres, so ``1 / requested`` came out at 0.19 against a
+    lower bound of 1.1. A warm start outside its own bounds is not a warm start,
+    it is a vector CMA-ES will silently clip on its first generation.
+    """
+    return float(SCALAR_BOUNDS[name].clip(value))
 
 
 def build(
@@ -186,15 +200,15 @@ def build(
         # that overshoots spends part of every corner above whatever it is
         # aiming at, and in Gate 1 that put three cars on their roofs. The
         # search raises this the moment it is worth lap time.
-        a_lat_eff=ROLLOVER_MARGIN * car.a_lat_effective_m_s2,
-        a_accel_eff=car.a_accel_m_s2,
+        a_lat_eff=_within("a_lat_eff", ROLLOVER_MARGIN * car.a_lat_effective_m_s2),
+        a_accel_eff=_within("a_accel_eff", car.a_accel_m_s2),
         # Backed off for the same reason, and the probe was explicit about this
         # one: 8.26 m/s^2 is what the car managed in the ten steps before it went
         # over its nose. A speed profile whose backward pass plans on braking the
         # car cannot do arrives at every corner too fast, which is what 93% full
         # throttle and five rollovers in two metres looked like from the outside.
-        a_brake_eff=ROLLOVER_MARGIN * car.a_brake_m_s2,
-        kappa_max_eff=1.0 / requested,
+        a_brake_eff=_within("a_brake_eff", ROLLOVER_MARGIN * car.a_brake_m_s2),
+        kappa_max_eff=_within("kappa_max_eff", 1.0 / requested),
         # Lookahead: about two wheelbases at rest, growing with speed. Short,
         # and deliberately shorter than the dead time would justify. Setting
         # k_v to the measured 0.33 s lag gives a 1.2 m lookahead at corner

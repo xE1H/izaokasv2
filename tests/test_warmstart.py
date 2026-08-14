@@ -15,10 +15,15 @@ from lituanicax_sdk.track import Track
 from lituanicax_sdk.tracks import OFFICIAL
 from lituanicax_sdk.vehicle import VEHICLE
 from teacher.params import LINE_POINTS, ControllerParams
-from teacher.warmstart import build, critically_damped_gains, format_report
+from teacher.warmstart import (
+    ROLLOVER_MARGIN,
+    build,
+    critically_damped_gains,
+    format_report,
+)
 from tools.geometry import TrackGeometry
 from tools.measured import Measured
-from tools.profile import offset_path
+from tools.profile import offset_path, widest_achievable_radius
 
 
 @pytest.fixture(scope="module")
@@ -149,13 +154,29 @@ def test_the_warm_start_line_is_representable_without_loss(official):
     )
 
 
-def test_the_warm_start_line_is_steerable(official):
-    """The whole reason the bound exists: the controller must start from a line it
-    can physically follow."""
+def test_the_warm_start_line_is_as_flat_as_the_corridor_allows(official):
+    """It cannot always be steerable, and pretending otherwise hid a real problem.
+
+    Holding 100 mm back for tracking error leaves an 80 mm corridor, and the
+    flattest line that fits in 80 mm has a smaller radius than the car's own
+    minimum. So the warm-start line *is* tighter than the kinematics like — and
+    it is still the right line, because the alternative measured worse in the
+    simulator: binding to the car's radius pinned the line against the walls and
+    every car crashed on its own tracking error.
+
+    What must hold is that the line is the flattest one available at the width it
+    was given, and that the report says plainly whether the car can steer it.
+    """
     car = Measured(wheelbase_m=0.26)
     params, report = build(official, car)
     _, _, kappa = offset_path(official, report_line(official, params))
-    assert float(np.abs(kappa).max()) <= 1.0 / car.r_min_m * 1.02
+    peak_radius = 1.0 / float(np.abs(kappa).max())
+
+    reachable, _ = widest_achievable_radius(
+        official, half_width=report["line_half_width_m"]
+    )
+    assert peak_radius == pytest.approx(min(reachable, car.r_min_m), rel=0.1)
+    assert report["r_min_m"] == car.r_min_m, "the report must not flatter the car"
 
 
 def report_line(geometry, params):
@@ -164,9 +185,21 @@ def report_line(geometry, params):
     return periodic_basis(geometry.num_samples, LINE_POINTS) @ params.line
 
 
-def test_the_warm_start_beats_the_centerline(official):
-    lap = build(official, Measured())[1]["quasi_static_lap_s"]
-    assert lap["fitted_line"] < lap["centerline"]
+def test_the_warm_start_line_is_flatter_than_the_centerline(official):
+    """The property that matters, now that it is not the fastest line on paper.
+
+    It used to be asserted that the warm start beat the centerline on quasi-static
+    lap time. It no longer does — holding 100 mm back for tracking error and
+    refusing to go tighter than the corridor allows costs about 0.15 s of paper
+    pace — and chasing that number was the mistake. The centerline peaks at
+    R = 0.366 m, well inside anything this car can steer, so it is not a lap time
+    the car could ever record. A flatter line the car can actually hold beats a
+    quicker one it cannot.
+    """
+    params, report = build(official, Measured())
+    _, _, kappa = offset_path(official, report_line(official, params))
+    line_radius = 1.0 / float(np.abs(kappa).max())
+    assert line_radius > report["centerline_min_radius_m"]
 
 
 def test_a_long_wheelbase_is_reported_as_unsteerable(official):
@@ -203,7 +236,10 @@ def test_rollover_limited_cars_get_slower_targets(official):
     fast, _ = build(official, Measured(a_lat_max_m_s2=12.0))
     slow, _ = build(official, Measured(a_lat_max_m_s2=12.0, rollover_a_lat_m_s2=5.0))
     assert slow.a_lat_eff < fast.a_lat_eff
-    assert slow.a_lat_eff == pytest.approx(5.0)
+    # Aimed below the threshold, not at it: a controller that overshoots spends
+    # part of every corner above whatever it targets, and targeting the rollover
+    # limit itself put three of ten cars on their roofs in Gate 1.
+    assert slow.a_lat_eff == pytest.approx(ROLLOVER_MARGIN * 5.0)
 
 
 def test_works_on_a_track_it_has_never_seen(circle_track):

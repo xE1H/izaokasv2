@@ -53,6 +53,7 @@ select = ["E", "F", "W", "I"]
 "tools/probe.py" = ["E402"]
 "tools/determinism.py" = ["E402"]
 "teacher/optimize.py" = ["E402"]
+"tools/grip.py" = ["E402"]
 
 [tool.ruff.lint.isort]
 known-first-party = ["lituanicax_sdk", "teamcode", "teacher", "tools"]

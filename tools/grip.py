@@ -122,8 +122,11 @@ def analyse(recorder: Recorder) -> tuple[dict, list[dict]]:
                 "speed_m_s": float(np.median(speed[window, index])),
                 "drift_m_s": float(np.median(np.abs(lateral_speed[window, index]))),
                 "wheels_rad": float(np.median(np.abs(steer_angle[window, index]))),
-                "ended": "tipped" if tipped is not None else
-                ("hit a wall" if hit is not None else "survived"),
+                "ended": (
+                    "tipped"
+                    if tipped is not None
+                    else ("hit a wall" if hit is not None else "survived")
+                ),
                 "ended_at_step": int(ended),
             }
         )
@@ -188,9 +191,9 @@ def main() -> int:
         )
     print(f"  Highest seen at any moment: {summary['highest_seen_m_s2']:.2f} m/s^2.")
     print(
-        f"\n  tools.probe reports a_lat_max from sustained cornering only, and the\n"
-        f"  quasi-static profile is built on it. Anything here above that figure is\n"
-        f"  corner speed the model is leaving on the table."
+        "\n  tools.probe reports a_lat_max from sustained cornering only, and the\n"
+        "  quasi-static profile is built on it. Anything here above that figure is\n"
+        "  corner speed the model is leaving on the table."
     )
 
     path = Path(args_cli.out)

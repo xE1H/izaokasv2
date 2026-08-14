@@ -1,0 +1,539 @@
+"""Tests for :mod:`teacher.controller` and :mod:`teacher.params`.
+
+The circle is the test track again: a constant-radius loop has an obvious right
+answer for every term, so a sign error cannot hide.
+
+The most important test here is :func:`test_controller_reads_only_car_state` — it
+pins the promise the whole approach rests on. If the controller reads something a
+policy cannot, the demonstrations it produces are unlearnable and Phase 3 fails
+for a reason that will look like a network problem.
+"""
+
+from __future__ import annotations
+
+import math
+
+import numpy as np
+import pytest
+import torch
+
+from lituanicax_sdk.vehicle import VEHICLE
+from teacher.controller import Controller, build_reference
+from teacher.params import (
+    DIMENSION,
+    LINE_POINTS,
+    SPEED_POINTS,
+    ControllerParams,
+)
+from tests.conftest import FakeRobot
+from tools.geometry import TrackGeometry
+
+RADIUS = 5.0
+V_MAX = 6.7
+WHEELBASE = 0.26
+
+
+@pytest.fixture
+def circle(circle_track):
+    return TrackGeometry.from_track(circle_track, spacing_m=0.02, smooth_rms_mm=0.0)
+
+
+@pytest.fixture
+def controller(circle):
+    params = ControllerParams()
+    return Controller(
+        circle,
+        build_reference(circle, params, v_max=V_MAX),
+        params,
+        wheelbase_m=WHEELBASE,
+        max_steer_rad=VEHICLE.max_steer_rad,
+    )
+
+
+def place(robot: FakeRobot, *, radius: float, theta: float, speed: float, yaw=None):
+    """Put a car on the circle at angle ``theta``, moving along the track."""
+    robot.data.root_pos_w[:, 0] = radius * math.cos(theta)
+    robot.data.root_pos_w[:, 1] = radius * math.sin(theta)
+    # Counterclockwise, so the tangent at theta is (-sin, cos).
+    heading = theta + math.pi / 2 if yaw is None else yaw
+    robot.set_yaw(heading)
+    robot.data.root_lin_vel_b[:, 0] = speed
+    robot.data.root_lin_vel_w[:, 0] = speed * math.cos(heading)
+    robot.data.root_lin_vel_w[:, 1] = speed * math.sin(heading)
+    return robot
+
+
+# ══════════════════════════════════════════════════════════════════════════
+#  The parameter vector
+# ══════════════════════════════════════════════════════════════════════════
+
+
+def test_dimension_is_the_documented_seventy():
+    assert DIMENSION == LINE_POINTS + SPEED_POINTS + len(
+        ControllerParams.scalar_names()
+    )
+    assert DIMENSION == 70
+
+
+def test_vector_round_trip():
+    params = ControllerParams()
+    assert np.allclose(
+        ControllerParams.from_vector(params.to_vector()).to_vector(), params.to_vector()
+    )
+
+
+def test_normalized_round_trip_and_range():
+    params = ControllerParams()
+    normalized = params.to_normalized()
+    assert normalized.shape == (DIMENSION,)
+    assert np.all((normalized >= 0.0) & (normalized <= 1.0))
+    assert np.allclose(
+        ControllerParams.from_normalized(normalized).to_vector(),
+        params.to_vector(),
+        atol=1e-9,
+    )
+
+
+def test_normalization_makes_every_parameter_the_same_scale():
+    """Why it exists: the raw ranges span 0.36 m and 17 m/s^2, and CMA-ES would
+    otherwise spend its early generations learning the scaling."""
+    low, high = ControllerParams.bounds_vector()
+    span = high - low
+    assert span.min() > 0.0
+    # In normalized space every span is exactly 1.
+    assert np.allclose(
+        (
+            ControllerParams.from_vector(high).to_normalized()
+            - ControllerParams.from_vector(low).to_normalized()
+        ),
+        1.0,
+    )
+
+
+def test_out_of_bounds_values_are_clipped_not_rejected():
+    """CMA-ES samples a Gaussian and will step outside the box. Evaluating the
+    nearest legal driver is honest; rejecting the sample biases the search."""
+    params = ControllerParams.from_vector(np.full(DIMENSION, 1e6))
+    low, high = ControllerParams.bounds_vector()
+    assert np.all(params.to_vector() <= high + 1e-9)
+    params = ControllerParams.from_vector(np.full(DIMENSION, -1e6))
+    assert np.all(params.to_vector() >= low - 1e-9)
+
+
+def test_wrong_length_vector_is_rejected():
+    with pytest.raises(ValueError, match="expected 70"):
+        ControllerParams.from_vector(np.zeros(12))
+
+
+def test_params_survive_a_round_trip_through_json(tmp_path):
+    params = ControllerParams(
+        line=np.linspace(-0.1, 0.1, LINE_POINTS), a_lat_eff=9.5, k_e=3.25
+    )
+    path = params.save(tmp_path / "teacher.json")
+    assert np.allclose(ControllerParams.load(path).to_vector(), params.to_vector())
+
+
+# ══════════════════════════════════════════════════════════════════════════
+#  The reference
+# ══════════════════════════════════════════════════════════════════════════
+
+
+def test_reference_has_one_entry_per_sample(circle):
+    reference = build_reference(circle, ControllerParams(), v_max=V_MAX)
+    for table in (
+        reference.offset,
+        reference.kappa,
+        reference.speed,
+        reference.speed_gradient,
+    ):
+        assert table.shape == (circle.num_samples,)
+        assert torch.isfinite(table).all()
+
+
+def test_reference_speed_respects_the_top_speed(circle):
+    reference = build_reference(
+        circle, ControllerParams(a_lat_eff=1000.0, a_accel_eff=100.0), v_max=V_MAX
+    )
+    assert float(reference.speed.max()) <= V_MAX + 1e-6
+
+
+def test_reference_speed_on_a_circle_is_the_cornering_limit(circle):
+    """A constant-radius loop has one target speed: sqrt(a_lat * R)."""
+    reference = build_reference(circle, ControllerParams(a_lat_eff=8.0), v_max=V_MAX)
+    assert float(reference.speed.mean()) == pytest.approx(
+        math.sqrt(8.0 * RADIUS), rel=0.02
+    )
+    # Nothing is accelerating or braking, so the gradient is ~0 everywhere.
+    assert float(reference.speed_gradient.abs().max()) < 0.05
+
+
+def test_speed_gradient_is_smooth_but_not_flattened():
+    """The gradient must survive smoothing on a track that really does accelerate.
+
+    Guards the other half of the fix: killing the ripple is easy, and killing the
+    signal with it would silently disable the throttle feedforward.
+    """
+    from lituanicax_sdk.track import Track
+    from lituanicax_sdk.tracks import OFFICIAL
+
+    geometry = TrackGeometry.from_track(Track(OFFICIAL, device="cpu"), spacing_m=0.02)
+    reference = build_reference(
+        geometry, ControllerParams(a_lat_eff=8.0, a_accel_eff=6.0), v_max=V_MAX
+    )
+    gradient = reference.speed_gradient
+    # Real accelerating and braking on this layout: the profile has to gain and
+    # lose several m/s over a couple of metres.
+    assert float(gradient.max()) > 0.5, "no acceleration survived the smoothing"
+    assert float(gradient.min()) < -0.5, "no braking survived the smoothing"
+    # But no sample-to-sample alternation: neighbouring gradients must agree.
+    jitter = (gradient - torch.roll(gradient, 1)).abs()
+    assert float(jitter.max()) < 0.5, "gradient still alternating between samples"
+
+
+def test_speed_scale_moves_the_target(circle):
+    slow = build_reference(
+        circle, ControllerParams(speed_scale=np.full(SPEED_POINTS, 0.7)), v_max=V_MAX
+    )
+    fast = build_reference(
+        circle, ControllerParams(speed_scale=np.full(SPEED_POINTS, 1.15)), v_max=V_MAX
+    )
+    assert float(slow.speed.mean()) < float(fast.speed.mean())
+
+
+def test_reference_line_follows_the_control_points(circle):
+    """A uniform offset must come through as that offset, not a smoothed fraction."""
+    params = ControllerParams(line=np.full(LINE_POINTS, 0.12))
+    reference = build_reference(circle, params, v_max=V_MAX)
+    assert float(reference.offset.mean()) == pytest.approx(0.12, abs=1e-6)
+
+
+# ══════════════════════════════════════════════════════════════════════════
+#  The control law
+# ══════════════════════════════════════════════════════════════════════════
+
+
+def test_actions_are_in_bounds_for_random_states(controller, circle):
+    """The SDK clamps anyway, but a controller that saturates constantly is
+    telling the search nothing."""
+    count = 512
+    robot = FakeRobot(num_envs=count)
+    generator = torch.Generator().manual_seed(0)
+    robot.data.root_pos_w[:, :2] = (
+        torch.rand(count, 2, generator=generator) - 0.5
+    ) * 12.0
+    robot.set_yaw(torch.rand(count, generator=generator) * 2 * math.pi)
+    robot.data.root_lin_vel_b[:, 0] = torch.rand(count, generator=generator) * V_MAX
+
+    from lituanicax_sdk.state import CarState, ControlHistory
+    from lituanicax_sdk.vehicle import TIMING
+
+    car = CarState(
+        robot=robot,
+        track=circle_track_of(controller),
+        vehicle=VEHICLE,
+        step_dt=TIMING.step_dt,
+        throttle_ids=torch.tensor([0, 1, 2, 3]),
+        steer_ids=torch.tensor([4, 5]),
+        suspension_ids=torch.tensor([6, 7, 8, 9]),
+        episode_step=torch.zeros(count, dtype=torch.long),
+        commands=ControlHistory(count, "cpu"),
+        applied_wheel_torque=torch.zeros(count, 4),
+        wall_touched=torch.zeros(count, dtype=torch.bool),
+    )
+    actions = controller(car)
+    assert actions.shape == (count, 2)
+    assert torch.isfinite(actions).all()
+    assert float(actions.min()) >= -1.0 and float(actions.max()) <= 1.0
+
+
+def circle_track_of(controller):
+    """The controller keeps geometry, not the SDK Track; tests need the latter."""
+    import csv
+    import tempfile
+    from pathlib import Path
+
+    from lituanicax_sdk.track import Track, TrackCfg
+
+    directory = Path(tempfile.mkdtemp())
+    path = directory / "circle.csv"
+    with open(path, "w", newline="") as handle:
+        writer = csv.writer(handle)
+        for i in range(720):
+            theta = 2.0 * math.pi * i / 720
+            writer.writerow([RADIUS * math.cos(theta), RADIUS * math.sin(theta), 0.0])
+    return Track(
+        TrackCfg(
+            name="circle",
+            walls_usd="unused.usd",
+            centerline_csv=str(path),
+            centerline_scale=(1.0, 1.0),
+        ),
+        device="cpu",
+    )
+
+
+def test_steers_back_towards_the_line(controller, robot, make_state):
+    """Displaced outward, the car must steer inward, and vice versa."""
+    inward = controller(
+        make_state(place(robot, radius=RADIUS + 0.15, theta=0.0, speed=2.0))
+    )
+    assert float(inward[0, 1]) > 0.0, "outside the line -> steer left (inward)"
+
+    outward = controller(
+        make_state(place(FakeRobot(1), radius=RADIUS - 0.15, theta=0.0, speed=2.0))
+    )
+    assert float(outward[0, 1]) < float(inward[0, 1])
+
+
+def test_steers_into_the_corner_when_on_the_line(controller, robot, make_state):
+    """On a counterclockwise circle with no error, the answer is left."""
+    actions = controller(make_state(place(robot, radius=RADIUS, theta=1.0, speed=2.0)))
+    assert float(actions[0, 1]) > 0.0
+
+
+def test_faster_cars_look_further_ahead(circle, robot, make_state):
+    """The lookahead is speed-scaled; a fixed one is twitchy fast or lazy slow.
+
+    Checked through behaviour: at higher speed the same displacement produces
+    less steering, because the aim point is further away.
+    """
+    params = ControllerParams(k_v=0.3, L_0=0.2, L_min=0.05, L_max=3.0, k_e=0.0, k_d=0.0)
+    controller = Controller(
+        circle,
+        build_reference(circle, params, v_max=V_MAX),
+        params,
+        wheelbase_m=WHEELBASE,
+        max_steer_rad=VEHICLE.max_steer_rad,
+    )
+    slow = controller(
+        make_state(place(robot, radius=RADIUS + 0.15, theta=0.0, speed=0.5))
+    )
+    fast = controller(
+        make_state(place(FakeRobot(1), radius=RADIUS + 0.15, theta=0.0, speed=6.0))
+    )
+    assert abs(float(fast[0, 1])) < abs(float(slow[0, 1]))
+
+
+def test_throttle_opens_when_below_target_and_closes_above(
+    controller, robot, make_state
+):
+    target = math.sqrt(8.0 * RADIUS)
+    slow = controller(
+        make_state(place(robot, radius=RADIUS, theta=0.0, speed=target - 2.0))
+    )
+    fast = controller(
+        make_state(place(FakeRobot(1), radius=RADIUS, theta=0.0, speed=target + 2.0))
+    )
+    assert float(slow[0, 0]) > 0.0
+    assert float(fast[0, 0]) < 0.0
+
+
+def test_separate_accelerate_and_brake_gains_are_both_used(circle, robot, make_state):
+    """The car's limits are asymmetric, so one gain cannot serve both."""
+    params = ControllerParams(k_p_accel=4.0, k_p_brake=0.5, k_ff=0.0)
+    controller = Controller(
+        circle,
+        build_reference(circle, params, v_max=V_MAX),
+        params,
+        wheelbase_m=WHEELBASE,
+        max_steer_rad=VEHICLE.max_steer_rad,
+    )
+    target = math.sqrt(8.0 * RADIUS)
+    under = controller(
+        make_state(place(robot, radius=RADIUS, theta=0.0, speed=target - 0.5))
+    )
+    over = controller(
+        make_state(place(FakeRobot(1), radius=RADIUS, theta=0.0, speed=target + 0.5))
+    )
+    # 4.0 * 0.5 = 2.0 saturates; 0.5 * -0.5 = -0.25 does not.
+    assert float(under[0, 0]) == pytest.approx(1.0)
+    assert float(over[0, 0]) == pytest.approx(-0.25, abs=0.05)
+
+
+def test_the_controller_is_memoryless(controller, robot, make_state):
+    """Two identical states must give identical actions, in any order.
+
+    Load-bearing for the search: a whole CMA-ES population shares one
+    environment, so any hidden state would leak between candidates.
+    """
+    first = controller(
+        make_state(place(robot, radius=RADIUS + 0.1, theta=2.0, speed=3.0))
+    )
+    _ = controller(make_state(place(FakeRobot(1), radius=RADIUS, theta=0.5, speed=1.0)))
+    again = controller(
+        make_state(place(FakeRobot(1), radius=RADIUS + 0.1, theta=2.0, speed=3.0))
+    )
+    assert torch.allclose(first, again)
+
+
+def test_batched_cars_do_not_interfere(controller, make_state):
+    """Each row must be what that car would get on its own."""
+    thetas = [0.0, 1.0, 2.0, 3.0, 4.0]
+    together = FakeRobot(len(thetas))
+    for i, theta in enumerate(thetas):
+        together.data.root_pos_w[i, 0] = (RADIUS + 0.1) * math.cos(theta)
+        together.data.root_pos_w[i, 1] = (RADIUS + 0.1) * math.sin(theta)
+        together.data.root_lin_vel_b[i, 0] = 2.0
+    yaws = torch.tensor([t + math.pi / 2 for t in thetas])
+    together.set_yaw(yaws)
+    for i, theta in enumerate(thetas):
+        together.data.root_lin_vel_w[i, 0] = 2.0 * math.cos(theta + math.pi / 2)
+        together.data.root_lin_vel_w[i, 1] = 2.0 * math.sin(theta + math.pi / 2)
+
+    batched = controller(make_state(together))
+    for i, theta in enumerate(thetas):
+        alone = controller(
+            make_state(place(FakeRobot(1), radius=RADIUS + 0.1, theta=theta, speed=2.0))
+        )
+        assert torch.allclose(batched[i], alone[0], atol=1e-5), theta
+
+
+# ══════════════════════════════════════════════════════════════════════════
+#  Driving a whole population at once
+# ══════════════════════════════════════════════════════════════════════════
+
+
+def test_a_population_matches_its_candidates_one_by_one(circle, make_state):
+    """The correctness test CMA-ES depends on.
+
+    A generation is scored by putting every (candidate, start) pair in its own
+    environment and driving them together. If the batched path diverges from the
+    single-candidate path at all, the search optimizes something other than what
+    a lap will be driven with — and the discrepancy would show up as CMA-ES
+    converging on a candidate that then benchmarks differently.
+    """
+    from teacher.controller import stack_references
+
+    candidates = [
+        ControllerParams(line=np.full(LINE_POINTS, 0.05), k_e=1.0, k_p_accel=1.5),
+        ControllerParams(line=np.full(LINE_POINTS, -0.10), k_e=4.0, L_0=0.5),
+        ControllerParams(
+            speed_scale=np.full(SPEED_POINTS, 0.8), a_lat_eff=11.0, w_ff=0.3
+        ),
+    ]
+    references = [build_reference(circle, p, v_max=V_MAX) for p in candidates]
+
+    # Two starts each, so the layout is the same shape the search uses.
+    thetas = [0.4, 2.2]
+    rows = torch.tensor([c for c in range(len(candidates)) for _ in thetas])
+    count = len(rows)
+
+    robot = FakeRobot(count)
+    yaws = []
+    for index in range(count):
+        theta = thetas[index % len(thetas)]
+        robot.data.root_pos_w[index, 0] = (RADIUS + 0.08) * math.cos(theta)
+        robot.data.root_pos_w[index, 1] = (RADIUS + 0.08) * math.sin(theta)
+        heading = theta + math.pi / 2
+        yaws.append(heading)
+        robot.data.root_lin_vel_b[index, 0] = 2.5
+        robot.data.root_lin_vel_w[index, 0] = 2.5 * math.cos(heading)
+        robot.data.root_lin_vel_w[index, 1] = 2.5 * math.sin(heading)
+    robot.set_yaw(torch.tensor(yaws))
+
+    batched = Controller(
+        circle,
+        stack_references(references),
+        candidates,
+        wheelbase_m=WHEELBASE,
+        max_steer_rad=VEHICLE.max_steer_rad,
+        rows=rows,
+    )
+    together = batched(make_state(robot))
+
+    for index in range(count):
+        candidate = candidates[int(rows[index])]
+        alone = Controller(
+            circle,
+            references[int(rows[index])],
+            candidate,
+            wheelbase_m=WHEELBASE,
+            max_steer_rad=VEHICLE.max_steer_rad,
+        )
+        theta = thetas[index % len(thetas)]
+        single = alone(
+            make_state(
+                place(FakeRobot(1), radius=RADIUS + 0.08, theta=theta, speed=2.5)
+            )
+        )
+        assert torch.allclose(together[index], single[0], atol=1e-5), index
+
+
+def test_population_rejects_inconsistent_arguments(circle):
+    from teacher.controller import stack_references
+
+    params = ControllerParams()
+    reference = build_reference(circle, params, v_max=V_MAX)
+    common = dict(wheelbase_m=WHEELBASE, max_steer_rad=VEHICLE.max_steer_rad)
+
+    with pytest.raises(ValueError, match="rows only makes sense"):
+        Controller(
+            circle, reference, params, rows=torch.zeros(3, dtype=torch.long), **common
+        )
+
+    with pytest.raises(ValueError, match="needs rows"):
+        Controller(circle, stack_references([reference]), [params], **common)
+
+    with pytest.raises(ValueError, match=r"stacked \[C, M\]"):
+        Controller(
+            circle, reference, [params], rows=torch.zeros(2, dtype=torch.long), **common
+        )
+
+
+# ══════════════════════════════════════════════════════════════════════════
+#  The constraint the whole approach rests on
+# ══════════════════════════════════════════════════════════════════════════
+
+
+class Recorder:
+    """Forwards to a ``CarState`` and remembers what was asked for."""
+
+    def __init__(self, target):
+        self.__dict__["_target"] = target
+        self.__dict__["seen"] = set()
+
+    def __getattr__(self, name):
+        self.seen.add(name)
+        return getattr(self._target, name)
+
+
+def test_controller_reads_only_car_state(controller, robot, make_state):
+    """Checklist item 1: the controller may only read what a policy can.
+
+    ``CarState`` *is* the policy-visible surface — the SDK hands exactly this to
+    ``compute_observations`` — so the test is that nothing private is touched and
+    that every name read is really on ``CarState``. A controller that reached for
+    ``car._robot`` would work fine and produce demonstrations no network could
+    ever reproduce.
+    """
+    car = make_state(place(robot, radius=RADIUS + 0.1, theta=1.0, speed=3.0))
+    recorder = Recorder(car)
+    controller(recorder)  # type: ignore[arg-type]
+
+    assert recorder.seen, "the recorder saw nothing; the proxy is not working"
+    private = {name for name in recorder.seen if name.startswith("_")}
+    assert not private, f"controller reached past the policy surface: {private}"
+
+    for name in recorder.seen:
+        assert hasattr(type(car), name), f"{name} is not a CarState attribute"
+
+
+def test_controller_does_not_need_the_simulator(controller, robot, make_state):
+    """It runs against the fake robot in these tests, which is the point: the
+    control law is Isaac-free and so is its whole test suite."""
+    actions = controller(make_state(place(robot, radius=RADIUS, theta=0.0, speed=2.0)))
+    assert actions.shape == (1, 2)
+
+
+def test_works_on_a_track_it_has_never_seen(circle_track):
+    """Nothing may be hardcoded to one layout."""
+    geometry = TrackGeometry.from_track(circle_track)
+    params = ControllerParams()
+    controller = Controller(
+        geometry,
+        build_reference(geometry, params, v_max=V_MAX),
+        params,
+        wheelbase_m=WHEELBASE,
+        max_steer_rad=VEHICLE.max_steer_rad,
+    )
+    assert controller.geometry.length > 0.0

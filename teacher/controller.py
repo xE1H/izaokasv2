@@ -1,0 +1,331 @@
+"""The control law: a deterministic driver, vectorized over thousands of cars.
+
+One function of state and parameters, no memory between steps, no branching on
+Python-level state. Everything is a torch tensor with one row per car, because
+CMA-ES scores a whole population in one simulation.
+
+**It reads a** :class:`~lituanicax_sdk.state.CarState` **and nothing else.** That
+is the constraint that makes the whole approach worth anything: the point of the
+controller is to teach a network that will only ever see an observation vector, so
+a controller that peeks at the simulator would be teaching something
+unlearnable. Rather than trusting discipline, the signature enforces it — the SDK
+hands ``compute_observations`` exactly the surface a policy is allowed to see, and
+that is the only input here. ``tests/test_controller.py`` pins the accessed
+attributes with a recording proxy.
+
+Steering is three terms added together, each of which fails in a different place,
+which is why the search gets to weight them:
+
+* **pure pursuit** aims at a point some distance ahead on the reference line. It
+  is stable and it cuts corners, and its lookahead has to grow with speed or it
+  oscillates.
+* **curvature feedforward** sets the steering the corner needs before any error
+  has built up. It is exactly right on a constant-radius corner and useless in a
+  transition.
+* **cross-track PD** removes whatever error the other two leave. Alone it is
+  always a step behind.
+
+Throttle is the profile's own gradient as feedforward plus a proportional
+correction, with separate accelerate and brake gains because the car's limits are
+asymmetric — it brakes at roughly 8 m/s² and accelerates at 6.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+
+import numpy as np
+import torch
+
+from lituanicax_sdk.state import CarState
+from tools.geometry import TrackGeometry
+from tools.profile import offset_path, periodic_basis, three_pass_profile
+
+from .params import ControllerParams
+
+
+@dataclass
+class Reference:
+    """What the controller steers at: a line and a speed for every arc length.
+
+    All tables are ``[M]`` torch tensors indexed by the track's own uniform
+    samples, so a lookup is an interpolation rather than a search.
+
+    Attributes:
+        offset: lateral offset of the racing line, metres, positive left.
+        kappa: signed curvature *of the racing line*, 1/m — not of the
+            centerline, which is a different and slower curve.
+        speed: target speed, m/s.
+        speed_gradient: ``dv/ds`` along the racing line, 1/s. Feeds the
+            feedforward acceleration ``v · dv/ds``.
+    """
+
+    offset: torch.Tensor
+    kappa: torch.Tensor
+    speed: torch.Tensor
+    speed_gradient: torch.Tensor
+
+    @property
+    def device(self) -> torch.device:
+        return self.offset.device
+
+    def to(self, device) -> "Reference":
+        return Reference(
+            self.offset.to(device),
+            self.kappa.to(device),
+            self.speed.to(device),
+            self.speed_gradient.to(device),
+        )
+
+    def as_arrays(self) -> dict[str, np.ndarray]:
+        """For ``reference.npz`` — the artifact the distilled student reads."""
+        return {
+            "offset": self.offset.cpu().numpy(),
+            "kappa": self.kappa.cpu().numpy(),
+            "speed": self.speed.cpu().numpy(),
+            "speed_gradient": self.speed_gradient.cpu().numpy(),
+        }
+
+
+#: Distance the speed gradient is measured over, metres. Short against the
+#: corner scale (the tightest radius is ~0.4 m and corners run 1-2 m), long
+#: against the 20 mm sample spacing.
+GRADIENT_WINDOW_M = 0.15
+
+
+def _periodic_smooth(values: np.ndarray, width: int) -> np.ndarray:
+    """Moving average around a closed loop."""
+    if width <= 1:
+        return values
+    kernel = np.ones(width) / width
+    padded = np.concatenate([values[-width:], values, values[:width]])
+    return np.convolve(padded, kernel, mode="same")[width : width + len(values)]
+
+
+def _speed_gradient(speed: np.ndarray, segment: np.ndarray) -> np.ndarray:
+    """``dv/ds`` along the path, smoothed enough to be differentiable.
+
+    The naive central difference between neighbouring samples does not survive
+    contact with a real track. Curvature comes from a cubic spline, whose second
+    derivative ripples by a fraction of a percent between knots; speed inherits
+    that as ``√(a_lat/κ)``, and differentiating it over a 20 mm baseline
+    amplifies it into ±0.47 1/s of alternating noise. Since the throttle
+    feedforward is ``v · dv/ds``, that is about 3 m/s² of garbage oscillating at
+    every sample — injected straight into the throttle command at 30 Hz.
+
+    So the speed is smoothed over the measurement window before being
+    differentiated, and the difference is taken across it rather than between
+    neighbours. On a constant-radius circle this returns ~0, which is the right
+    answer and what ``tests/test_controller.py`` checks.
+    """
+    spacing = float(np.mean(segment))
+    half = max(1, int(round(GRADIENT_WINDOW_M / max(spacing, 1e-9))))
+
+    smoothed = _periodic_smooth(speed, half)
+    arc = np.concatenate([[0.0], np.cumsum(segment)])[:-1]
+    total = float(segment.sum())
+    # Modular difference, so the window wraps across the start/finish line.
+    span = (np.roll(arc, -half) - np.roll(arc, half)) % total
+    return (np.roll(smoothed, -half) - np.roll(smoothed, half)) / np.maximum(span, 1e-9)
+
+
+def build_reference(
+    geometry: TrackGeometry, params: ControllerParams, *, v_max: float
+) -> Reference:
+    """Turn a parameter vector into the line and speed profile it describes.
+
+    Runs once per candidate on the CPU, not once per simulation step.
+
+    The speed profile is *derived* from the line rather than searched directly —
+    see :mod:`teacher.params` for why — and then scaled by the candidate's
+    ``speed_scale`` knots, which is what lets the search trail-brake and pick late
+    apexes without ever proposing a physically impossible profile.
+    """
+    count = geometry.num_samples
+    line = periodic_basis(count, len(params.line)) @ np.asarray(
+        params.line, dtype=np.float64
+    )
+    scale = periodic_basis(count, len(params.speed_scale)) @ np.asarray(
+        params.speed_scale, dtype=np.float64
+    )
+
+    _, segment, kappa = offset_path(geometry, line)
+    speed = three_pass_profile(
+        segment,
+        kappa,
+        a_lat=params.a_lat_eff,
+        a_accel=params.a_accel_eff,
+        a_brake=params.a_brake_eff,
+        v_max=v_max,
+    )
+    speed = np.clip(speed * scale, 0.1, v_max)
+    gradient = _speed_gradient(speed, segment)
+
+    to_tensor = lambda a: torch.tensor(a, dtype=torch.float32, device=geometry.device)  # noqa: E731
+    return Reference(
+        offset=to_tensor(line),
+        kappa=to_tensor(kappa),
+        speed=to_tensor(speed),
+        speed_gradient=to_tensor(gradient),
+    )
+
+
+#: Parameters the control law reads at every step. The line and speed profile are
+#: already baked into the :class:`Reference`; these are the feedback half, plus
+#: ``a_accel_eff`` which normalizes the throttle feedforward.
+GAIN_NAMES = (
+    "k_v",
+    "L_0",
+    "L_min",
+    "L_max",
+    "w_pp",
+    "w_ff",
+    "k_e",
+    "k_d",
+    "k_p_accel",
+    "k_p_brake",
+    "k_ff",
+    "a_accel_eff",
+)
+
+
+def stack_references(references: list[Reference]) -> Reference:
+    """Combine per-candidate references into ``[C, M]`` tables."""
+    return Reference(
+        offset=torch.stack([r.offset for r in references]),
+        kappa=torch.stack([r.kappa for r in references]),
+        speed=torch.stack([r.speed for r in references]),
+        speed_gradient=torch.stack([r.speed_gradient for r in references]),
+    )
+
+
+class Controller:
+    """A deterministic driver. Call it with a ``CarState``, get actions back.
+
+    Args:
+        geometry: the track, resampled.
+        reference: the line and speed profile from :func:`build_reference`, or a
+            ``[C, M]`` stack from :func:`stack_references`.
+        params: one :class:`~teacher.params.ControllerParams`, or a list of ``C``
+            of them when driving a whole population at once.
+        wheelbase_m: measured by the Phase 0 probe, not taken from a spec sheet.
+        max_steer_rad: the locked steering limit, ``VEHICLE.max_steer_rad``.
+        rows: ``[N]`` which candidate each car is driving. Required when ``params``
+            is a list, and it is what lets CMA-ES score 256 candidates across
+            2560 environments in one simulation.
+
+    One implementation serves both cases. The alternative — a separate batched
+    controller — would be two copies of the control law to keep in step, and the
+    one that drifts is the one that produced the lap time.
+    """
+
+    def __init__(
+        self,
+        geometry: TrackGeometry,
+        reference: Reference,
+        params: ControllerParams | list[ControllerParams],
+        *,
+        wheelbase_m: float,
+        max_steer_rad: float,
+        rows: torch.Tensor | None = None,
+    ):
+        self.geometry = geometry
+        self.reference = reference
+        self.wheelbase_m = float(wheelbase_m)
+        self.max_steer_rad = float(max_steer_rad)
+        self.rows = rows
+
+        if isinstance(params, ControllerParams):
+            if rows is not None:
+                raise ValueError("rows only makes sense with a list of params.")
+            self.params = params
+            self.gains = {name: float(getattr(params, name)) for name in GAIN_NAMES}
+        else:
+            if rows is None:
+                raise ValueError(
+                    "a list of params needs rows to say which car drives which."
+                )
+            if reference.offset.dim() != 2:
+                raise ValueError(
+                    "a list of params needs stacked [C, M] reference tables; "
+                    "see stack_references()."
+                )
+            self.params = params[0]
+            device = geometry.device
+            self.gains = {
+                name: torch.tensor(
+                    [float(getattr(p, name)) for p in params],
+                    dtype=torch.float32,
+                    device=device,
+                )[rows]
+                for name in GAIN_NAMES
+            }
+
+    # ──────────────────────────────────────────────────────────────────────
+
+    def __call__(self, car: CarState) -> torch.Tensor:
+        """Throttle and steering for every car, ``[N, 2]`` in ``[-1, 1]``."""
+        geometry, reference, gains = self.geometry, self.reference, self.gains
+
+        # ── Where am I, relative to the line I meant to be on ─────────────
+        s, offset = geometry.project(car.pos_xy)
+        error = offset - self._at(reference.offset, s)
+
+        # How fast that error is growing. Read from the velocity rather than
+        # differenced between steps, so the controller stays memoryless — which
+        # is what lets a whole CMA-ES population share one environment without
+        # any per-candidate state to reset.
+        normal = geometry.interp_vec(s, geometry.normal)
+        error_rate = (car.lin_vel_w[:, :2] * normal).sum(dim=-1)
+
+        # ── Steering ──────────────────────────────────────────────────────
+        speed = car.speed_forward
+        lookahead = torch.clamp(
+            gains["k_v"] * speed + gains["L_0"], gains["L_min"], gains["L_max"]
+        )
+
+        ahead = s + lookahead
+        target = geometry.point_at(ahead, self._at(reference.offset, ahead))
+        to_target = target - car.pos_xy
+        cos_yaw, sin_yaw = torch.cos(car.yaw), torch.sin(car.yaw)
+        forward = to_target[:, 0] * cos_yaw + to_target[:, 1] * sin_yaw
+        left = -to_target[:, 0] * sin_yaw + to_target[:, 1] * cos_yaw
+        alpha = torch.atan2(left, forward)
+
+        pursuit = torch.atan2(
+            2.0 * self.wheelbase_m * torch.sin(alpha), lookahead.clamp(min=1e-3)
+        )
+        feedforward = torch.atan(self.wheelbase_m * self._at(reference.kappa, s))
+        feedback = -(gains["k_e"] * error + gains["k_d"] * error_rate)
+
+        steer = (
+            gains["w_pp"] * pursuit + gains["w_ff"] * feedforward + feedback
+        ).clamp(-self.max_steer_rad, self.max_steer_rad)
+
+        # ── Throttle ──────────────────────────────────────────────────────
+        wanted = self._at(reference.speed, s)
+        error_speed = wanted - speed
+        # v * dv/ds is the acceleration the profile itself is asking for.
+        wanted_accel = wanted * self._at(reference.speed_gradient, s)
+        gain = torch.where(
+            error_speed > 0.0,
+            torch.as_tensor(gains["k_p_accel"], device=speed.device).expand_as(speed),
+            torch.as_tensor(gains["k_p_brake"], device=speed.device).expand_as(speed),
+        )
+        reference_accel = torch.as_tensor(
+            gains["a_accel_eff"], device=speed.device
+        ).clamp(min=1e-3)
+        throttle = (
+            gain * error_speed + gains["k_ff"] * wanted_accel / reference_accel
+        ).clamp(-1.0, 1.0)
+
+        return torch.stack([throttle, steer / self.max_steer_rad], dim=-1)
+
+    def _at(self, table: torch.Tensor, s: torch.Tensor) -> torch.Tensor:
+        """Interpolate a reference table at arc length ``s``, wrapping the loop.
+
+        Picks the right row per car when the tables are a ``[C, M]`` population
+        stack, using the two-index trick in
+        :meth:`~tools.geometry.TrackGeometry.interp`.
+        """
+        return self.geometry.interp(s, table, rows=self.rows)

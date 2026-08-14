@@ -1,0 +1,336 @@
+"""The one scoring function. Everything downstream is judged by this.
+
+**Needs Isaac Sim.**
+
+This reproduces what ``python -m lituanicax_sdk.benchmark`` measures, because a
+search that optimizes anything else optimizes the wrong thing. Three details of
+the real benchmark are easy to miss and each one changes the number:
+
+* **The clock is an** :class:`~lituanicax_sdk.timing.AttemptTimer`, not the SDK's
+  :class:`~lituanicax_sdk.timing.LapTimer`. It gates on the plane through the
+  *spawn point* and starts the instant the car is put down — one lap of driving
+  for one lap of time, no untimed out-lap. Timing against the track's
+  start/finish line instead would measure a different and slower thing.
+* **One attempt per car.** The benchmark banks a result and calls
+  ``race.retire()``, which freezes and hides the car. Without it the cars that get
+  round first keep lapping while the rest are still on their first attempt.
+* **The dones are read before the clock.** A car terminated inside ``step()`` may
+  have been teleported back to its spawn point, and that jump crosses its own
+  gate — scoring a lap that was never driven.
+
+The logic mirrors ``lituanicax_sdk/benchmark.py:301-381``. It is duplicated rather
+than imported because importing ``benchmark`` launches Isaac Sim at module scope.
+If that file changes, this one has to follow.
+
+**What this cannot yet be checked against.** The real benchmark needs a policy
+checkpoint, so there is no way to cross-validate these numbers against it until a
+distilled student exists in Phase 3. Until then its correctness rests on matching
+the source line by line plus ``tests/test_evaluate.py``, which exercises the
+bookkeeping against a scripted fake environment.
+"""
+
+from __future__ import annotations
+
+import math
+from dataclasses import dataclass
+
+import numpy as np
+import torch
+
+from lituanicax_sdk.spawn import SpawnManager
+from lituanicax_sdk.timing import AttemptTimer
+
+#: A failed attempt has no lap time. Matches ``benchmark.NO_LAP``.
+NO_LAP = float("inf")
+
+#: How many attempts a submission is the best of. Matches ``benchmark.AGENTS``.
+AGENTS = 10
+
+#: Degrees of heading jitter either way. Matches ``benchmark.SPAWN_JITTER_DEG``.
+SPAWN_JITTER_DEG = 5.0
+
+
+@dataclass
+class Attempt:
+    """What one car did with its one attempt."""
+
+    valid: bool
+    lap_time_s: float | None
+    progress: float
+    outcome: str
+
+    @property
+    def score(self) -> float:
+        return self.lap_time_s if self.lap_time_s is not None else NO_LAP
+
+
+def official_start_offsets(
+    count: int = AGENTS, jitter_deg: float = SPAWN_JITTER_DEG, seed: int = 0
+) -> np.ndarray:
+    """Heading offsets for a set of attempts, radians.
+
+    Drawn from the same uniform distribution the SDK uses —
+    ``(rand - 0.5) * 2 * jitter_rad`` in
+    :meth:`~lituanicax_sdk.spawn.SpawnManager.sample` — so a run here samples the
+    same spread of starts a benchmark run does.
+
+    The *exact* values differ from any particular benchmark run, because the SDK
+    draws its jitter per environment inside ``sample()`` and there is no way to
+    reach in and pin it. What matters for a search is that every candidate faces
+    the **same** ten starts, which is what :class:`RepeatedStarts` guarantees and
+    what the SDK's own spawner does not.
+    """
+    generator = np.random.default_rng(seed)
+    jitter = math.radians(jitter_deg)
+    return (generator.random(count) - 0.5) * 2.0 * jitter
+
+
+class RepeatedStarts(SpawnManager):
+    """One spawn point, a fixed list of heading offsets, tiled across environments.
+
+    The layout is candidate-major: environment ``c * S + i`` drives candidate
+    ``c`` from start ``i``. So ``env_id % S`` is the start index, and every
+    candidate in a generation is scored on an identical set of starts.
+
+    That identity is the point. With the SDK's own spawner every environment draws
+    its own jitter, so candidate A and candidate B would be compared on different
+    starts — and on a chaotic system a couple of degrees at the line decides
+    whether a car makes a corner most of a lap later. The comparison would be
+    mostly noise.
+    """
+
+    _offsets: torch.Tensor
+
+    def __init__(
+        self,
+        offsets_rad,
+        *,
+        xy: tuple[float, float] = (0.0, 0.0),
+        yaw_deg: float | None = None,
+        height_m: float = 0.002,
+    ):
+        super().__init__(xy=xy, yaw_deg=yaw_deg, jitter_rad=0.0, height_m=height_m)
+        self.offsets_rad = np.asarray(offsets_rad, dtype=np.float64)
+        if self.offsets_rad.ndim != 1 or self.offsets_rad.size == 0:
+            raise ValueError("offsets_rad must be a non-empty 1-D array.")
+
+    def setup(self, track, num_envs, device) -> None:
+        super().setup(track, num_envs, device)
+        self._offsets = torch.tensor(
+            self.offsets_rad, dtype=torch.float32, device=device
+        )
+        if num_envs % self.num_starts != 0:
+            print(
+                f"[evaluate] warning: {num_envs} environments is not a multiple of "
+                f"{self.num_starts} starts, so the last candidate is short of one."
+            )
+
+    @property
+    def num_starts(self) -> int:
+        return int(self.offsets_rad.size)
+
+    def sample(self, env_ids: torch.Tensor):
+        xy = self._xy.unsqueeze(0).expand(len(env_ids), 2).clone()
+        yaw = float(self._yaw) + self._offsets[env_ids % self.num_starts]
+        return xy, yaw
+
+    def describe(self) -> str:
+        spread = math.degrees(float(np.abs(self.offsets_rad).max()))
+        return (
+            f"world origin, {self.num_starts} fixed starts within "
+            f"+/-{spread:.1f} deg, repeated per candidate"
+        )
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+#  Scoring
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+def evaluate(env, driver, *, verbose: bool = False) -> list[Attempt]:
+    """Drive every car's single attempt to its end and score it.
+
+    Args:
+        env: a :class:`~tools.harness.HarnessEnv` built with
+            ``official_rules=True``. Anything else is not measuring the
+            competition's rules.
+        driver: called with the current ``CarState``, returns ``[N, 2]`` actions.
+        verbose: print each lap as it completes.
+
+    Returns:
+        One :class:`Attempt` per environment, in environment order.
+    """
+    if not env.cfg.enforce_official_rules:
+        raise ValueError(
+            "evaluate() must run under official rules, or the crash rules that "
+            "decide a lap's validity are the team's own and the time means nothing."
+        )
+
+    device, count = env.device, env.num_envs
+    lap_time = torch.full((count,), NO_LAP, device=device)
+    settled = torch.zeros(count, dtype=torch.bool, device=device)
+    crashed = torch.zeros(count, dtype=torch.bool, device=device)
+    timed_out = torch.zeros(count, dtype=torch.bool, device=device)
+
+    env.reset()
+    car = env.latest_car
+
+    # The gate is where the cars are standing now, not where the spawner was asked
+    # to put them — so it is right however they were placed.
+    start_xy = env.robot.data.root_pos_w[:, :2].clone()
+    clock = AttemptTimer(env.track, start_xy, env.step_dt, device)
+
+    progress = _Progress(env, start_xy)
+
+    for _ in range(int(env.max_episode_length) + 1):
+        if bool(settled.all()):
+            break
+
+        actions = driver(car)
+        _, _, terminated, truncated, _ = env.step(actions)
+        car = env.latest_car
+
+        # Anything that ended the episode ended the attempt with it. Read before
+        # the clock: a car terminated inside step() may have been teleported back
+        # to its spawn point, and that jump crosses its own gate.
+        ending = (terminated | truncated).bool() & ~settled
+
+        position = env.robot.data.root_pos_w[:, :2]
+        nearest, _ = env.track.nearest(position)
+        finished, elapsed = clock.update(position, nearest, env.episode_length_buf)
+        progress.update(nearest)
+
+        lapped = finished & ~settled & ~ending
+        if bool(lapped.any()):
+            lap_time = torch.where(lapped, elapsed, lap_time)
+            if verbose:
+                for index in lapped.nonzero().flatten().tolist():
+                    print(f"  env {index:4d}   lap {float(lap_time[index]):7.3f} s")
+
+        crashed |= ending & env.reset_terminated
+        timed_out |= ending & env.reset_time_outs
+        settled |= ending | lapped
+        # One attempt per car in the simulation, not just in the arithmetic.
+        env.retire(settled)
+
+    reached = progress.best()
+    attempts = []
+    for index in range(count):
+        time_s = float(lap_time[index])
+        valid = time_s != NO_LAP
+        attempts.append(
+            Attempt(
+                valid=valid,
+                lap_time_s=time_s if valid else None,
+                progress=float(reached[index]),
+                outcome=(
+                    "lap"
+                    if valid
+                    else "crashed"
+                    if bool(crashed[index])
+                    else "out of time"
+                    if bool(timed_out[index])
+                    else "unfinished"
+                ),
+            )
+        )
+    return attempts
+
+
+class _Progress:
+    """How far round the loop each car got, as a fraction, unwrapped.
+
+    The crash branch of the search objective needs a gradient — a candidate that
+    gets 60% round has to score better than one that spins on the line — and
+    neither the lap timer's ``_max_travel`` (which measures the short way, so it
+    peaks at half a lap) nor the raw modular distance (which reads ~1.0 for a car
+    that merely reverses over the line) will give one.
+
+    So the per-step displacement is unwrapped and accumulated. At 30 Hz a car
+    moves at most a couple of centimetres per step, far less than half a lap, so
+    the shortest-step assumption never breaks.
+    """
+
+    def __init__(self, env, start_xy: torch.Tensor):
+        track = env.track
+        self.length = float(track.track_length)
+        self.arc = track.arc_length
+        index, _ = track.nearest(start_xy)
+        self.start_arc = self.arc[index]
+        self.previous = torch.zeros(env.num_envs, device=env.device)
+        self.cumulative = torch.zeros(env.num_envs, device=env.device)
+        self.peak = torch.zeros(env.num_envs, device=env.device)
+
+    def update(self, nearest_idx: torch.Tensor) -> None:
+        along = torch.remainder(self.arc[nearest_idx] - self.start_arc, self.length)
+        half = 0.5 * self.length
+        step = torch.remainder(along - self.previous + half, self.length) - half
+        self.previous = along
+        self.cumulative = self.cumulative + step
+        self.peak = torch.maximum(self.peak, self.cumulative)
+
+    def best(self) -> torch.Tensor:
+        return (self.peak / self.length).clamp(min=0.0)
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+#  Turning attempts into a score
+# ═══════════════════════════════════════════════════════════════════════════
+
+#: The crash branch bottoms out here — worse than any lap will ever be, so a
+#: valid lap always beats a crash however far the crash got.
+CRASH_FLOOR = 20.0
+CRASH_CEILING = 40.0
+
+
+def objective(
+    attempts: list[Attempt], *, min_completions: int, num_starts: int
+) -> tuple[float, dict]:
+    """Score one candidate from its attempts. Lower is better.
+
+    ``J = min(valid lap times)`` when the candidate completed at least
+    ``min_completions`` of its starts, and ``40 - 20 * best_progress`` otherwise.
+
+    Two properties matter. The crash branch never reaches 20, so **a valid lap
+    always dominates a crash** — the search can never be tempted to trade a
+    finished lap for a spectacular failure. And it has a gradient inside, so early
+    generations climb out: getting 60% of the way round scores 28, spinning on the
+    line scores 40.
+
+    **The completion floor is not where risk gets spent.** The scoring rule allows
+    nine attempts in ten to fail for free, and exploiting that is worth real time
+    — but it belongs to the student in Phase 4, not to the teacher. A teacher that
+    survives three starts in ten produces demonstrations that are inconsistent and
+    partly truncated, and behaviour cloning on those is far worse than cloning a
+    repeatable driver.
+    """
+    valid = sorted(a.lap_time_s for a in attempts if a.valid)
+    reached = max((a.progress for a in attempts), default=0.0)
+    detail = {
+        "completions": len(valid),
+        "attempts": len(attempts),
+        "best_progress": reached,
+        "best_lap_time_s": valid[0] if valid else None,
+        "median_lap_time_s": valid[len(valid) // 2] if valid else None,
+        "outcomes": [a.outcome for a in attempts],
+    }
+
+    if valid and len(valid) >= min_completions:
+        detail["branch"] = "lap"
+        return valid[0], detail
+
+    detail["branch"] = "crash"
+    # Progress can exceed 1 for a car that got round but had the lap voided; cap
+    # it so the crash branch stays strictly worse than any lap.
+    return CRASH_CEILING - (CRASH_CEILING - CRASH_FLOOR) * min(reached, 1.0), detail
+
+
+def summarize(attempts: list[Attempt]) -> str:
+    valid = sorted(a.lap_time_s for a in attempts if a.valid)
+    if not valid:
+        best = max((a.progress for a in attempts), default=0.0)
+        return f"no lap in {len(attempts)} attempts, best got {best:.0%} round"
+    return (
+        f"best {valid[0]:.3f} s, median {valid[len(valid) // 2]:.3f} s, "
+        f"{len(valid)}/{len(attempts)} completed"
+    )

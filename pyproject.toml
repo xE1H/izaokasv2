@@ -45,14 +45,17 @@ exclude = ["IsaacLab", ".venv", "logs"]
 select = ["E", "F", "W", "I"]
 
 [tool.ruff.lint.per-file-ignores]
-# These three must start Isaac Sim before importing anything that depends on
-# it, so their imports genuinely cannot all sit at the top.
+# These must start Isaac Sim before importing anything that depends on it, so
+# their imports genuinely cannot all sit at the top.
 "teamcode/train.py" = ["E402"]
 "teamcode/play.py" = ["E402"]
 "lituanicax_sdk/benchmark.py" = ["E402"]
+"tools/probe.py" = ["E402"]
+"tools/determinism.py" = ["E402"]
+"teacher/optimize.py" = ["E402"]
 
 [tool.ruff.lint.isort]
-known-first-party = ["lituanicax_sdk", "teamcode"]
+known-first-party = ["lituanicax_sdk", "teamcode", "teacher", "tools"]
 
 # ── Type checking (pyright / Pylance) ─────────────────────────────────────
 # Isaac Lab is installed *editable*, which pip implements with an import hook

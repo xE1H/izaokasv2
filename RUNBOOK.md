@@ -5,7 +5,8 @@ shut down — the exact steps that worked, including the gotchas. Everything her
 runs from a local machine (a Mac is fine — it only drives the remote over SSH;
 Isaac Sim itself cannot run on macOS).
 
-Related: [`PROGRESS.md`](PROGRESS.md) for results and what to try next.
+Related: [Track A](#track-a--the-optimized-controller-pipeline) below, for the
+deterministic-controller pipeline.
 
 ---
 
@@ -189,7 +190,8 @@ pkill -f "6006:localhost:6006"                 # close it later
 Quick text status instead (from the repo root, uses the `vast4090` alias):
 
 ```bash
-bash lx-status.sh    # current iteration, reward, episode length, lap time, GPU
+ssh vast4090 'tail -5 ~/train.log'      # iteration, reward, episode length
+ssh vast4090 'nvidia-smi --query-gpu=utilization.gpu,memory.used --format=csv'
 ```
 
 Metrics that matter: `Train/mean_reward` (should climb), `Mean episode length`
@@ -251,6 +253,72 @@ Then:
 > Marketplace hosts can vanish, so a "stopped" instance is ~99% safe, not 100%.
 > Keep checkpoints backed up locally and code/progress on GitHub, and destroying
 > costs you nothing.
+
+---
+
+## Track A — the optimized controller pipeline
+
+A deterministic controller, optimized against the simulator with CMA-ES, used to
+measure what this track allows and then to teach a policy. `tools/` and `teacher/`
+in this repo; see the module docstrings for why each piece is shaped as it is.
+
+Half of it needs no simulator and is unit-tested anywhere:
+
+```bash
+# on any machine, including a Mac (needs torch, scipy, pytest — no Isaac Sim)
+python -m pytest tests/ -q             # 351 tests
+python -m teacher.warmstart --report   # the starting parameters, and a verdict
+```
+
+The other half needs a GPU box built as in steps 1-3 above, plus:
+
+```bash
+uv pip install cma      # teacher.optimize needs it; nothing else does
+```
+
+Then, in order. **Step 1 is a go/no-go — do not skip it.**
+
+```bash
+export OMNI_KIT_ACCEPT_EULA=YES
+cd ~/LituanicaX_IsaacSimChallenge
+
+# 1. Measure the car. Exits 3 if the tightest corner cannot be steered at all,
+#    in which case a pure-pursuit teacher will not complete a lap and the reason
+#    is geometry, not gains.
+uv run python -m tools.probe --headless
+
+# 2. How reproducible is the simulator? Decides whether a candidate's score
+#    needs averaging over repeats — worth knowing before a day of GPU time.
+uv run python -m tools.determinism --headless --envs 64 --out artifacts/det-64.npz
+uv run python -m tools.determinism --headless --envs 1  --out artifacts/det-1.npz
+uv run python -m tools.determinism --compare artifacts/det-64.npz artifacts/det-1.npz
+uv run python -m tools.determinism --headless --restore
+
+# 3. Warm start, now against measured numbers rather than guesses.
+uv run python -m teacher.warmstart --report
+
+# 4. Search. Start at 64 candidates until a generation's wall-clock is known;
+#    raise it once you can afford to.
+nohup uv run python -u -m teacher.optimize --headless \
+  --population 64 --generations 100 > ~/optimize.log 2>&1 &
+
+# 5. The reportable number, at the 60 s window a real attempt gets.
+uv run python -m teacher.optimize --headless --measure artifacts/teacher.json
+```
+
+`T_teacher` from step 5 is the point of the whole exercise. Read it against the
+board's best: comfortably under it means there is something to distil, level with
+it means the controller has only matched what RL already does.
+
+⚠️ **The four Isaac-dependent modules have never been run** — Isaac Sim does not
+run on macOS. Expect to fix import-order and API-signature mistakes in
+`tools/harness.py`, `tools/probe.py`, `tools/determinism.py` and
+`teacher/optimize.py` on the first session, before trusting any measurement.
+
+⚠️ **Never run this with `--device cpu` and more than one car.** Isaac Lab only
+filters collisions between environments on the GPU, so on CPU every car shares
+one 0.70 m corridor and crashes into the others. `make_env` refuses unless you
+pass `allow_cpu=True`.
 
 ---
 

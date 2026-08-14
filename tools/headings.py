@@ -48,6 +48,16 @@ parser.add_argument("--out", default="artifacts/headings.json")
 parser.add_argument("--agents", type=int, default=10, help="Cars, as the benchmark.")
 parser.add_argument("--seed", type=int, default=0, help="Spawn seed, as the benchmark.")
 parser.add_argument("--jitter-deg", type=float, default=5.0)
+parser.add_argument(
+    "--obs",
+    type=int,
+    default=None,
+    help=(
+        "Override the observation width. Only useful for checking that the "
+        "heading draw does not depend on it -- if it does, this harness cannot "
+        "stand in for the benchmark's environment."
+    ),
+)
 parser.add_argument("--allow-cpu", action="store_true")
 AppLauncher.add_app_launcher_args(parser)
 args_cli, _ = parser.parse_known_args()
@@ -80,8 +90,20 @@ def read_offsets(env, spawn) -> list[float]:
     return [math.degrees(float(o)) for o in offset]
 
 
-def headings(observation_space: int | None = None) -> list[float]:
-    """Build the benchmark's spawn, reset once, and read what came out."""
+def main() -> int:
+    """One read per process.
+
+    Isaac Lab will not build a second environment in the same process — it wedges
+    partway through the second scene — so stability is checked by running this
+    twice and comparing the files, which is the more honest test anyway: a draw
+    that repeats within one process but not across them would be no use.
+    """
+    if args_cli.obs is not None:
+        from tools import harness
+
+        harness.OBSERVATION_SPACE = args_cli.obs
+        harness.HarnessEnvCfg.observation_space = args_cli.obs
+
     spawn = SpawnManager(xy=(0.0, 0.0), jitter_rad=math.radians(args_cli.jitter_deg))
     env = make_env(
         num_envs=args_cli.agents,
@@ -90,35 +112,14 @@ def headings(observation_space: int | None = None) -> list[float]:
         seed=args_cli.seed,
         allow_cpu=args_cli.allow_cpu,
     )
-    if observation_space is not None:
-        env.cfg.observation_space = observation_space
     env.reset()
-    offsets = read_offsets(env, spawn)
-    env.close()
-    return offsets
+    first = read_offsets(env, spawn)
 
-
-def main() -> int:
-    first = headings()
-    second = headings()
-
-    print("\n  first  read: " + ", ".join(f"{o:+.4f}" for o in first))
-    print("  second read: " + ", ".join(f"{o:+.4f}" for o in second))
-
-    stable = all(abs(a - b) < 1e-6 for a, b in zip(first, second))
-    print(f"\n  stable across runs: {stable}")
-    if not stable:
-        print(
-            "  The draw does not repeat, so there is no fixed set of ten to aim at\n"
-            "  and evenly spaced headings remain the honest proxy."
-        )
-        Path(args_cli.out).write_text(json.dumps({"stable": False}, indent=2))
-        return 1
-
-    print(f"  spread: {min(first):+.3f}° to {max(first):+.3f}°")
+    print("\n  headings: " + ", ".join(f"{o:+.4f}" for o in first))
+    print(f"  spread:   {min(first):+.3f} to {max(first):+.3f} degrees")
     payload = {
-        "stable": True,
         "seed": args_cli.seed,
+        "observation_space": int(env.cfg.observation_space),
         "agents": args_cli.agents,
         "jitter_deg": args_cli.jitter_deg,
         "offsets_deg": first,

@@ -104,6 +104,16 @@ parser.add_argument(
         "somewhere different."
     ),
 )
+parser.add_argument(
+    "--score",
+    default=None,
+    metavar="PARAMS",
+    help=(
+        "Score this file through the search's own scoring path and exit. "
+        "Anything it disagrees with --measure about is a difference between "
+        "the two paths rather than a property of the driver."
+    ),
+)
 parser.add_argument("--allow-cpu", action="store_true")
 parser.add_argument(
     "--trace",
@@ -447,6 +457,44 @@ def main() -> int:
 
     offsets = official_start_offsets(count=args_cli.starts)
     spawn = RepeatedStarts(offsets)
+
+    # ── Score one file through the search's own path ──────────────────────
+    #
+    # Not a duplicate of --measure. A candidate that scores well in a generation
+    # and then fails --measure is either genuinely fragile or being evaluated
+    # somewhere subtly different, and the two possibilities call for opposite
+    # responses. This runs score_generation on a saved file, so anything it
+    # disagrees with --measure about is a difference between the paths and not a
+    # property of the driver.
+    if args_cli.score:
+        params = ControllerParams.load(args_cli.score)
+        env = make_env(
+            num_envs=args_cli.starts,
+            spawn=spawn,
+            official_rules=True,
+            episode_length_s=args_cli.episode,
+            allow_cpu=args_cli.allow_cpu,
+        )
+        geometry_on_device = TrackGeometry.from_track(
+            env.track, spacing_m=args_cli.spacing
+        )
+        rows = torch.zeros(args_cli.starts, dtype=torch.long, device=env.device)
+        losses, details = score_generation(
+            env,
+            geometry_on_device,
+            [params],
+            rows,
+            car,
+            args_cli.starts,
+            args_cli.min_completions,
+        )
+        detail = details[0]
+        print(f"\n[score] J {losses[0]:.3f}  branch {detail['branch']}")
+        print(f"[score] completions {detail['completions']}/{args_cli.starts}")
+        print(f"[score] best lap    {detail['best_lap_time_s']}")
+        print(f"[score] best round  {detail['best_progress']:.1%}")
+        print(f"[score] outcomes    {detail['outcomes']}")
+        return 0
 
     # ── Measure only ──────────────────────────────────────────────────────
     if args_cli.measure:

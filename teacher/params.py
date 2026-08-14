@@ -1,12 +1,12 @@
 """The controller's parameters: what CMA-ES searches over.
 
-Seventy-three numbers in five groups:
+Eighty-eight numbers in five groups:
 
 ======================  =====  ===============================================
 group                   count  what it does
 ======================  =====  ===============================================
 ``line``                  40   racing line, as lateral offset control points
-``speed_scale``           15   local multiplier on the quasi-static profile
+``speed_scale``           30   local multiplier on the quasi-static profile
 effective limits           4   a_lat, a_accel, a_brake, kappa_max
 gains                     11   lookahead, steering blend, feedback
 dynamic terms              3   yaw-rate, sideslip, rotation-by-braking
@@ -51,10 +51,15 @@ import numpy as np
 #: Racing-line control points. Matches the resolution the warm-start solve uses.
 LINE_POINTS = 40
 
-#: Knots in the speed multiplier. Deliberately coarser than the line: this exists
-#: to let the search deviate from the quasi-static profile where trail-braking
-#: and late apexes live, not to specify a speed per metre.
-SPEED_POINTS = 15
+#: Knots in the speed multiplier.
+#:
+#: Doubled from 15 once the search showed it needed the resolution: at 15 knots a
+#: 50 m lap gets one every 3.3 m, and the corners that decide this lap are 1-2 m
+#: long, so a single knot had to serve a corner and the straight either side of
+#: it. The quasi-static profile it multiplies is wrong in ways that vary corner
+#: by corner — it has no load transfer and no rotation — so the correction has to
+#: be able to vary corner by corner too.
+SPEED_POINTS = 30
 
 
 @dataclass(frozen=True)
@@ -118,11 +123,15 @@ SCALAR_BOUNDS: dict[str, Bound] = {
 #: :data:`tools.profile.DEFAULT_HALF_WIDTH_M`.
 LINE_BOUND = Bound(-0.18, 0.18)
 
-#: Speed multiplier. Below 1 lets the search brake earlier than the quasi-static
-#: profile says; a little above 1 lets it carry more speed where the profile is
-#: pessimistic. Not symmetric, because being 15% optimistic ends an attempt and
-#: being 30% pessimistic only costs time.
-SPEED_BOUND = Bound(0.7, 1.15)
+#: Speed multiplier on the quasi-static profile.
+#:
+#: Widened from (0.7, 1.15) because the search pressed against *both* ends — its
+#: knots ran 0.704 to 1.136 — and a parameter pinned at its bounds is a bound
+#: choosing the answer. The asymmetry is gone with it: the original reasoning was
+#: that being optimistic ends an attempt while being pessimistic only costs time,
+#: which is true of a single attempt and false of the competition, where the
+#: fastest of ten counts and nine failures are free.
+SPEED_BOUND = Bound(0.5, 1.5)
 
 #: Total number of searched parameters.
 DIMENSION = LINE_POINTS + SPEED_POINTS + len(SCALAR_BOUNDS)

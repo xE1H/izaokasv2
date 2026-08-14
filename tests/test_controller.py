@@ -68,11 +68,11 @@ def place(robot: FakeRobot, *, radius: float, theta: float, speed: float, yaw=No
 # ══════════════════════════════════════════════════════════════════════════
 
 
-def test_dimension_is_the_documented_seventy_three():
+def test_dimension_matches_the_documented_groups():
     assert DIMENSION == LINE_POINTS + SPEED_POINTS + len(
         ControllerParams.scalar_names()
     )
-    assert DIMENSION == 73
+    assert DIMENSION == 88
 
 
 def test_vector_round_trip():
@@ -121,7 +121,7 @@ def test_out_of_bounds_values_are_clipped_not_rejected():
 
 
 def test_wrong_length_vector_is_rejected():
-    with pytest.raises(ValueError, match="expected 73"):
+    with pytest.raises(ValueError, match="expected 88"):
         ControllerParams.from_vector(np.zeros(12))
 
 

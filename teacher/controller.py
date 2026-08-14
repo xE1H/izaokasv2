@@ -54,8 +54,8 @@ import numpy as np
 import torch
 
 from lituanicax_sdk.state import CarState
-from tools.geometry import TrackGeometry
 from lituanicax_sdk.vehicle import VEHICLE
+from tools.geometry import TrackGeometry
 from tools.profile import (
     offset_path,
     periodic_basis,

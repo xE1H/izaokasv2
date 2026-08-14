@@ -179,8 +179,8 @@ def report(trace: dict, *, wheelbase_m: float, settle_steps: int = 10) -> dict:
     print()
     if share > 0.25:
         print(
-            f"  STEERING-LIMITED. The car is at its steering limit for {share:.0%} of\n"
-            "  the lap, which is not a few clips in the tightest corners — it is the\n"
+            f"  STEERING-LIMITED. The car is at its limit for {share:.0%} of the\n"
+            "  lap, which is not a few clips in the tightest corners — it is the\n"
             "  lap. A pure-pursuit law has no move left here: it is already asking\n"
             "  for everything. The remaining time is in rotating the car with the\n"
             "  throttle, which this control law cannot express."

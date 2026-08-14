@@ -248,7 +248,13 @@ def search(
                 solutions = strategy.ask()
                 candidates = [ControllerParams.from_normalized(x) for x in solutions]
                 losses, details = score_generation(
-                    env, geometry, candidates, rows, car, starts, args_cli.min_completions
+                    env,
+                    geometry,
+                    candidates,
+                    rows,
+                    car,
+                    starts,
+                    args_cli.min_completions,
                 )
                 strategy.tell(solutions, losses)
 
@@ -293,7 +299,10 @@ def search(
                 )
 
                 if improved:
-                    checkpoint(best_params, {"best_loss": best_loss, "history": history})
+                    checkpoint(
+                        best_params,
+                        {"best_loss": best_loss, "history": history},
+                    )
 
                 if stale >= args_cli.restart_after:
                     # Not IPOP: the environment fixes the population size, so this

@@ -208,82 +208,101 @@ def search(
 
     for seed in range(args_cli.seeds):
         print(f"\n[optimize] ── CMA-ES seed {seed + 1}/{args_cli.seeds} ──")
-        strategy = cma.CMAEvolutionStrategy(
-            list(best_params.to_normalized()),
-            args_cli.sigma,
-            {
-                "bounds": [0.0, 1.0],
-                "popsize": population,
-                "seed": seed + 1,
-                "verbose": -9,
-            },
-        )
-        stale, seed_best = 0, float("inf")
-
-        for generation in range(args_cli.generations):
-            if strategy.stop():
-                print(f"[optimize] stopped: {strategy.stop()}")
-                break
-
-            started = time.time()
-            solutions = strategy.ask()
-            candidates = [ControllerParams.from_normalized(x) for x in solutions]
-            losses, details = score_generation(
-                env, geometry, candidates, rows, car, starts, args_cli.min_completions
-            )
-            strategy.tell(solutions, losses)
-
-            order = int(np.argmin(losses))
-            loss = losses[order]
-            laps = sum(1 for d in details if d["branch"] == "lap")
-            elapsed = time.time() - started
-
-            improved = loss < best_loss
-            if improved:
-                best_loss, best_params = loss, candidates[order]
-                marker = "  <- best so far, saved"
-            else:
-                marker = ""
-            if loss < seed_best:
-                seed_best, stale = loss, 0
-            else:
-                stale += 1
-
-            detail = details[order]
-            shown = (
-                f"{detail['best_lap_time_s']:.3f} s"
-                if detail["best_lap_time_s"] is not None
-                else f"no lap ({detail['best_progress']:.0%} round)"
-            )
-            print(
-                f"[optimize] gen {generation + 1:3d}  J {loss:7.3f}  {shown:>22}  "
-                f"{detail['completions']}/{starts} done  "
-                f"{laps}/{population} candidates lapped  {elapsed:.0f}s{marker}"
-            )
-            history.append(
-                {
-                    "seed": seed,
-                    "generation": generation,
-                    "loss": loss,
-                    "candidates_lapping": laps,
-                    **{
-                        k: detail[k]
-                        for k in ("completions", "best_lap_time_s", "best_progress")
-                    },
-                }
-            )
-
-            if improved:
-                checkpoint(best_params, {"best_loss": best_loss, "history": history})
-
-            if stale >= args_cli.restart_after:
-                # Not IPOP: the environment fixes the population size, so this
-                # re-inflates sigma from the incumbent instead of growing lambda.
+        # The generation budget is spent across however many restarts stagnation
+        # calls for, rather than being abandoned at the first one. Before this
+        # loop existed, hitting --restart-after simply broke out and — with a
+        # single seed — ended the entire run, while printing that it was
+        # restarting. A 250-generation search would have stopped at about 40.
+        spent, attempt = 0, 0
+        while spent < args_cli.generations:
+            # Widen the step each time. A search that has stopped improving at
+            # this scale needs to look further out, and the incumbent it starts
+            # from is kept regardless, so a bad restart costs generations rather
+            # than the result.
+            sigma = args_cli.sigma * (1.5**attempt)
+            if attempt:
                 print(
-                    f"[optimize] {stale} generations without improvement — "
-                    "restarting from the incumbent with a wider sigma"
+                    f"[optimize] restart {attempt} from the incumbent, "
+                    f"sigma {sigma:.3f}"
                 )
-                break
+            strategy = cma.CMAEvolutionStrategy(
+                list(best_params.to_normalized()),
+                sigma,
+                {
+                    "bounds": [0.0, 1.0],
+                    "popsize": population,
+                    "seed": seed * 1000 + attempt + 1,
+                    "verbose": -9,
+                },
+            )
+            stale, seed_best = 0, float("inf")
+            attempt += 1
+
+            for generation in range(spent, args_cli.generations):
+                spent += 1
+                if strategy.stop():
+                    print(f"[optimize] stopped: {strategy.stop()}")
+                    break
+
+                started = time.time()
+                solutions = strategy.ask()
+                candidates = [ControllerParams.from_normalized(x) for x in solutions]
+                losses, details = score_generation(
+                    env, geometry, candidates, rows, car, starts, args_cli.min_completions
+                )
+                strategy.tell(solutions, losses)
+
+                order = int(np.argmin(losses))
+                loss = losses[order]
+                laps = sum(1 for d in details if d["branch"] == "lap")
+                elapsed = time.time() - started
+
+                improved = loss < best_loss
+                if improved:
+                    best_loss, best_params = loss, candidates[order]
+                    marker = "  <- best so far, saved"
+                else:
+                    marker = ""
+                if loss < seed_best:
+                    seed_best, stale = loss, 0
+                else:
+                    stale += 1
+
+                detail = details[order]
+                shown = (
+                    f"{detail['best_lap_time_s']:.3f} s"
+                    if detail["best_lap_time_s"] is not None
+                    else f"no lap ({detail['best_progress']:.0%} round)"
+                )
+                print(
+                    f"[optimize] gen {generation + 1:3d}  J {loss:7.3f}  {shown:>22}  "
+                    f"{detail['completions']}/{starts} done  "
+                    f"{laps}/{population} candidates lapped  {elapsed:.0f}s{marker}"
+                )
+                history.append(
+                    {
+                        "seed": seed,
+                        "generation": generation,
+                        "loss": loss,
+                        "candidates_lapping": laps,
+                        **{
+                            k: detail[k]
+                            for k in ("completions", "best_lap_time_s", "best_progress")
+                        },
+                    }
+                )
+
+                if improved:
+                    checkpoint(best_params, {"best_loss": best_loss, "history": history})
+
+                if stale >= args_cli.restart_after:
+                    # Not IPOP: the environment fixes the population size, so this
+                    # re-inflates sigma from the incumbent instead of growing lambda.
+                    print(
+                        f"[optimize] {stale} generations without improvement — "
+                        "restarting from the incumbent with a wider sigma"
+                    )
+                    break
 
     return best_params, {"best_loss": best_loss, "history": history}
 

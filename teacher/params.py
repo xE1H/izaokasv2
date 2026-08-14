@@ -72,14 +72,20 @@ SCALAR_BOUNDS: dict[str, Bound] = {
     "kappa_max_eff": Bound(1.1, 4.0),
     # ── Lookahead. Speed-scaled, because a fixed lookahead is either twitchy at
     #    speed or lazy in the slow corners.
-    "k_v": Bound(0.0, 0.6),  # seconds of travel
+    # Seconds of travel. Widened from 0.6 after the search pinned itself at
+    # 0.575 — a bound the optimizer is pressed against is a bound that is
+    # choosing the answer.
+    "k_v": Bound(0.0, 1.2),
     "L_0": Bound(0.02, 1.0),  # metres at a standstill
     "L_min": Bound(0.02, 0.6),
     "L_max": Bound(0.2, 3.0),
     # ── Steering blend. Pure pursuit and curvature feedforward both produce a
     #    steering angle; the search decides how much to trust each.
-    "w_pp": Bound(0.0, 2.5),
-    "w_ff": Bound(0.0, 2.5),
+    #    Widened from 2.5: the wheels only reach about 75% of the angle they are
+    #    commanded at cornering speed, so a gain above one is the car's physics
+    #    rather than a mistuning, and the search had pushed w_ff to 2.40 of 2.5.
+    "w_pp": Bound(0.0, 4.0),
+    "w_ff": Bound(0.0, 4.0),
     # ── Cross-track PD, in radians of steer per metre and per m/s.
     "k_e": Bound(0.0, 8.0),
     "k_d": Bound(0.0, 3.0),

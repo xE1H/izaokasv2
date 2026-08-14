@@ -266,7 +266,7 @@ Half of it needs no simulator and is unit-tested anywhere:
 
 ```bash
 # on any machine, including a Mac (needs torch, scipy, pytest — no Isaac Sim)
-python -m pytest tests/ -q             # 351 tests
+python -m pytest tests/ -q             # 357 tests
 python -m teacher.warmstart --report   # the starting parameters, and a verdict
 ```
 
@@ -297,10 +297,11 @@ uv run python -m tools.determinism --headless --restore
 # 3. Warm start, now against measured numbers rather than guesses.
 uv run python -m teacher.warmstart --report
 
-# 4. Search. Start at 64 candidates until a generation's wall-clock is known;
-#    raise it once you can afford to.
+# 4. Search. 64 candidates x 10 starts = 640 cars is 39 s per generation on a
+#    4090, so 250 generations is about 2.7 hours. Checkpoints artifacts/
+#    teacher.json on every improvement, so killing it mid-run costs nothing.
 nohup uv run python -u -m teacher.optimize --headless \
-  --population 64 --generations 100 > ~/optimize.log 2>&1 &
+  --population 64 --generations 250 --sigma 0.25 > ~/optimize.log 2>&1 &
 
 # 5. The reportable number, at the 60 s window a real attempt gets.
 uv run python -m teacher.optimize --headless --measure artifacts/teacher.json
@@ -310,10 +311,43 @@ uv run python -m teacher.optimize --headless --measure artifacts/teacher.json
 board's best: comfortably under it means there is something to distil, level with
 it means the controller has only matched what RL already does.
 
-⚠️ **The four Isaac-dependent modules have never been run** — Isaac Sim does not
-run on macOS. Expect to fix import-order and API-signature mistakes in
-`tools/harness.py`, `tools/probe.py`, `tools/determinism.py` and
-`teacher/optimize.py` on the first session, before trusting any measurement.
+### What the first real session found (2026-08-14, RTX 4090)
+
+**Gate 0 passes, but by 4%** — the car's minimum radius is 0.523 m against a
+corridor that can deliver 0.545 m. That is the number the whole approach rests
+on and it has almost no slack.
+
+**The simulator is bitwise deterministic**, within a batch *and* across batch
+sizes. A candidate scored in a population of 640 reproduces exactly when re-run
+alone, so no averaging over repeats is needed and `T_teacher` carries no
+evaluation noise. States restore to 1.5 mm.
+
+**Do not trust the probe's numbers without looking at the traces.** Its first
+run reported a rollover threshold of 3.2 m/s², a 6.5-second steering lag, and a
+braking figure averaged through a somersault. All three were plausible-looking
+artifacts, and the raw traces are what exposed them — a wall impact (forward
+speed +6.67 → −0.87 m/s in a single 33 ms step) had flipped the car and been
+counted as a tip. Run `--dump` and read them:
+
+```bash
+uv run python -m tools.probe --headless --dump artifacts/probe-traces.npz
+uv run python -m teacher.optimize --headless --measure <params> \
+    --trace artifacts/gate1-trace.npz
+```
+
+**The measured car is not the car the plan assumed.** It is
+**power-limited, not grip-limited**: `a_accel` is 2.74 m/s² (falling to 0.29 at
+6.75 m/s), so it spends most of an attempt at full throttle and never reaches
+the speeds a quasi-static profile asks for. Consequence for the racing line:
+flatter lines track far better and a shorter path buys almost nothing.
+
+**The steering is an effort-limited servo.** The wheels reach ~62% of the
+commanded angle at 6.8 m/s and take 10 control steps (333 ms) to get there.
+`R_min = L_wb / tan(0.488)` is a low-speed figure at best.
+
+⚠️ **`simulation_app.close()` can wedge for 10+ minutes** after a completed run,
+which silently eats the next command in a chained script. `tools.determinism`
+and `teacher.optimize` now give it 30 s and then `os._exit`.
 
 ⚠️ **Never run this with `--device cpu` and more than one car.** Isaac Lab only
 filters collisions between environments on the GPU, so on CPU every car shares

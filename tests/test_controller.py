@@ -164,7 +164,15 @@ def test_reference_speed_on_a_circle_is_the_cornering_limit(circle):
         math.sqrt(8.0 * RADIUS), rel=0.02
     )
     # Nothing is accelerating or braking, so the gradient is ~0 everywhere.
-    assert float(reference.speed_gradient.abs().max()) < 0.05
+    #
+    # Not *exactly* zero, and the tolerance had to grow when the profile started
+    # modelling the motor's falloff. The discretized circle's curvature ripples
+    # by a fraction of a percent, so the cornering ceiling does too; at 6.3 m/s
+    # against a 6.7 m/s top speed the car has 6% of its standing acceleration
+    # left and can no longer pull those dips back out. That is correct — a car
+    # near its top speed really cannot re-accelerate — and 0.06 1/s is nothing
+    # against the +-0.47 of alternating noise this assertion was written for.
+    assert float(reference.speed_gradient.abs().max()) < 0.1
 
 
 def test_speed_gradient_is_smooth_but_not_flattened():

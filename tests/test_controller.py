@@ -18,7 +18,7 @@ import pytest
 import torch
 
 from lituanicax_sdk.vehicle import VEHICLE
-from teacher.controller import Controller, build_reference
+from teacher.controller import Controller, Reference, build_reference
 from teacher.params import (
     DIMENSION,
     LINE_POINTS,
@@ -326,6 +326,51 @@ def test_throttle_opens_when_below_target_and_closes_above(
     )
     assert float(slow[0, 0]) > 0.0
     assert float(fast[0, 0]) < 0.0
+
+
+def test_a_braking_feedforward_cannot_hold_a_slow_car_still(
+    controller, robot, make_state
+):
+    """The failure that stopped Gate 1 dead, and did not look like a failure.
+
+    The feedforward describes the acceleration a car *already on* the speed
+    profile needs. A car well below it, in a braking zone because there is a
+    corner coming, got a feedforward of -2.9 against a proportional term of
+    +2.9. They cancelled, the throttle sat at 0.03, and ten out of ten cars
+    crawled at 0.15 m/s until the stall rule retired them 5.5 m into the lap.
+
+    Nothing about that reads as broken from the outside: the profile was
+    sensible, the gains were sensible, and the car simply would not go.
+    """
+    reference = controller.reference
+    controller.reference = Reference(
+        offset=reference.offset,
+        kappa=reference.kappa,
+        speed=reference.speed,
+        # Everywhere a hard braking zone, which is the case that broke it.
+        speed_gradient=torch.full_like(reference.speed_gradient, -3.0),
+    )
+    target = math.sqrt(8.0 * RADIUS)
+    crawling = controller(
+        make_state(place(robot, radius=RADIUS, theta=0.0, speed=target - 2.9))
+    )
+    assert float(crawling[0, 0]) > 0.5, "a car 2.9 m/s too slow must open the throttle"
+
+
+def test_a_braking_feedforward_still_brakes_a_fast_car(controller, robot, make_state):
+    """The gate must not cost the feedforward its job, only its veto."""
+    reference = controller.reference
+    controller.reference = Reference(
+        offset=reference.offset,
+        kappa=reference.kappa,
+        speed=reference.speed,
+        speed_gradient=torch.full_like(reference.speed_gradient, -3.0),
+    )
+    target = math.sqrt(8.0 * RADIUS)
+    hot = controller(
+        make_state(place(robot, radius=RADIUS, theta=0.0, speed=target + 0.2))
+    )
+    assert float(hot[0, 0]) < 0.0, "over the target in a braking zone means brake"
 
 
 def test_separate_accelerate_and_brake_gains_are_both_used(circle, robot, make_state):

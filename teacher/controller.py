@@ -307,6 +307,21 @@ class Controller:
         error_speed = wanted - speed
         # v * dv/ds is the acceleration the profile itself is asking for.
         wanted_accel = wanted * self._at(reference.speed_gradient, s)
+        # ...but that describes a car already *on* the profile. A car 2.9 m/s
+        # below it, sitting in a braking zone because there is a corner coming,
+        # gets a feedforward of -2.9 against a proportional term of +2.9, and the
+        # two cancel to a throttle of 0.03. Measured, in Gate 1: cars crawling at
+        # 0.15 m/s for forty steps, unable to start, until the stall rule retired
+        # them 5.5 m into the lap.
+        #
+        # So the feedforward may help the speed error but never fight it. When
+        # the car is slow it does not need to hear that it should be slowing
+        # down; the profile dropping below its speed will say so soon enough,
+        # through the proportional term, which is the part that knows where the
+        # car actually is.
+        wanted_accel = torch.where(
+            error_speed > 0.0, wanted_accel.clamp(min=0.0), wanted_accel.clamp(max=0.0)
+        )
         gain = torch.where(
             error_speed > 0.0,
             torch.as_tensor(gains["k_p_accel"], device=speed.device).expand_as(speed),

@@ -311,6 +311,35 @@ uv run python -m teacher.optimize --headless --measure artifacts/teacher.json
 board's best: comfortably under it means there is something to distil, level with
 it means the controller has only matched what RL already does.
 
+### Where the deterministic controller tops out
+
+**15.067 s verified**, against a board best of 14.3 s. The quasi-static model with
+the corrected measurements predicts **15.05 s** for a steerable line, so the
+controller is achieving its own plan to within 0.02 s — there is no tracking loss
+left to recover, and the remaining gap is in the model rather than the execution.
+
+Three mechanisms can beat a point-mass model, and all three were measured on the
+best candidate. All three are worse:
+
+| mechanism | parameter | result |
+|---|---|---|
+| deliberate sideslip | `slip_gain` 0.05–0.20 | no lap at any value |
+| rotation by braking | `k_rotate` 0.3 → 1.6 | 15.43 → 15.53 → no lap |
+| slowing to regain steering | `steer_ratio_eff` 0.85 → 0.40 | no lap at any value |
+
+Two independent CMA-ES runs also drove `slip_gain` to ~0.001 on their own over
+150 generations. The car is all-wheel drive, so throttle consumes front grip
+rather than rotating the car, and it rolls at 10.5 m/s² — the two facts that make
+sliding cost more than it buys here.
+
+The one addition that *is* load-bearing is **yaw-rate feedback** (`k_r`): remove
+it and the car cannot complete a lap at all.
+
+So this control structure is at its ceiling. Beating 14.3 s needs a controller
+whose reference is not a steady-state speed at each point — the quasi-static
+profile cannot express a brief excursion above the sustained limit through a
+short corner, which is the most likely thing an RL policy is exploiting.
+
 ### What the first real session found (2026-08-14, RTX 4090)
 
 **Gate 0 passes, but by 4%** — the car's minimum radius is 0.523 m against a

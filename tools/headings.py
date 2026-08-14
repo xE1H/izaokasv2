@@ -49,13 +49,15 @@ parser.add_argument("--agents", type=int, default=10, help="Cars, as the benchma
 parser.add_argument("--seed", type=int, default=0, help="Spawn seed, as the benchmark.")
 parser.add_argument("--jitter-deg", type=float, default=5.0)
 parser.add_argument(
-    "--obs",
-    type=int,
+    "--episode",
+    type=float,
     default=None,
     help=(
-        "Override the observation width. Only useful for checking that the "
-        "heading draw does not depend on it -- if it does, this harness cannot "
-        "stand in for the benchmark's environment."
+        "Attempt window, seconds. Only useful for checking that the heading "
+        "draw does not depend on it: this harness defaults to 25 s and the "
+        "benchmark gives 60, so if the draw shifts with the window then it also "
+        "shifts between here and the benchmark and these headings are not the "
+        "ones that will be scored."
     ),
 )
 parser.add_argument("--allow-cpu", action="store_true")
@@ -98,19 +100,15 @@ def main() -> int:
     twice and comparing the files, which is the more honest test anyway: a draw
     that repeats within one process but not across them would be no use.
     """
-    if args_cli.obs is not None:
-        from tools import harness
-
-        harness.OBSERVATION_SPACE = args_cli.obs
-        harness.HarnessEnvCfg.observation_space = args_cli.obs
-
     spawn = SpawnManager(xy=(0.0, 0.0), jitter_rad=math.radians(args_cli.jitter_deg))
+    extra = {} if args_cli.episode is None else {"episode_length_s": args_cli.episode}
     env = make_env(
         num_envs=args_cli.agents,
         spawn=spawn,
         official_rules=True,
         seed=args_cli.seed,
         allow_cpu=args_cli.allow_cpu,
+        **extra,
     )
     env.reset()
     first = read_offsets(env, spawn)
@@ -119,7 +117,7 @@ def main() -> int:
     print(f"  spread:   {min(first):+.3f} to {max(first):+.3f} degrees")
     payload = {
         "seed": args_cli.seed,
-        "observation_space": int(env.cfg.observation_space),
+        "episode_length_s": float(env.cfg.episode_length_s),
         "agents": args_cli.agents,
         "jitter_deg": args_cli.jitter_deg,
         "offsets_deg": first,

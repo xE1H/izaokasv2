@@ -37,7 +37,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import math
 import os
 import sys
 from pathlib import Path
@@ -66,12 +65,10 @@ import numpy as np  # noqa: E402
 import torch  # noqa: E402
 
 from lituanicax_sdk.track import Track  # noqa: E402
-from lituanicax_sdk.vehicle import VEHICLE  # noqa: E402
 from tools.geometry import TrackGeometry  # noqa: E402
 from tools.harness import FixedPoses, make_env  # noqa: E402
 from tools.probe_analysis import (  # noqa: E402
     PROBE_SCALE,
-    TIPPED_UP_AXIS,
     Recorder,
     impact_step,
     probe_track,

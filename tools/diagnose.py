@@ -35,6 +35,7 @@ import argparse
 
 import numpy as np
 
+from lituanicax_sdk.rules import FLIPPED_UP_AXIS_THRESHOLD
 from lituanicax_sdk.vehicle import VEHICLE
 from tools.measured import Measured
 
@@ -42,9 +43,14 @@ from tools.measured import Measured
 #: official track rather than to make a point.
 BANDS = (0.0, 0.25, 0.5, 1.0, 1.5, 2.0, 10.0)
 
-#: ``up_axis`` above this is a car still on its wheels. Everything a tipped car
-#: does is about the crash, not about the control law.
-UPRIGHT = 0.9
+#: ``up_axis`` above this is a car the rules still consider to be racing.
+#:
+#: Deliberately the rulebook's own figure (``rules.FLIPPED_UP_AXIS_THRESHOLD``,
+#: about 73° of roll) rather than something tidier. Nothing in the rules
+#: penalises sliding, and leaning is free right up to that line — so a filter at
+#: 0.9, which is 26° of roll, would throw away exactly the hard cornering that
+#: the fastest laps are made of and report the car as tamer than it is.
+UPRIGHT = FLIPPED_UP_AXIS_THRESHOLD
 
 #: A car slower than this is not driving, and must not be counted as if it were.
 #:

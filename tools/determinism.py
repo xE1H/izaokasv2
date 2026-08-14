@@ -116,7 +116,9 @@ def script(step: int, count: int):
 
 
 def main() -> int:
-    args = parser.parse_args()
+    # Not parse_args: AppLauncher's flags (--headless above all) arrive on the
+    # same command line and belong to its parser, not this one.
+    args, _ = parser.parse_known_args()
 
     if args.compare:
         return compare(*args.compare)

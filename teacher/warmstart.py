@@ -42,12 +42,7 @@ from tools.profile import (
     widest_achievable_radius,
 )
 
-from .params import (
-    LINE_POINTS,
-    SCALAR_BOUNDS,
-    SPEED_POINTS,
-    ControllerParams,
-)
+from .params import LINE_POINTS, SPEED_POINTS, ControllerParams
 
 DEFAULT_PATH = Path("artifacts/teacher-warmstart.json")
 
@@ -127,11 +122,12 @@ def build(
     )
 
     steer_lag_s = float(car.steer_lag_steps) * TIMING.step_dt
-    # The cross-track loop cannot be faster than the actuator it drives. A 4 rad/s
-    # design against a 0.33 s dead time is 76 degrees of phase lag at crossover,
-    # which is not a stability margin, it is an oscillator. Keep the loop slow
-    # enough that the lag costs about 0.3 rad of phase.
-    frequency = min(DESIGN_FREQUENCY_RAD_S, 0.3 / max(steer_lag_s, 1e-3))
+    # Tempting, and measured, and wrong: slowing the cross-track loop until the
+    # 0.33 s dead time costs only ~0.3 rad of phase means omega = 0.9 rad/s, and
+    # since k_e goes as omega squared that is k_e = 0.02 -- no lane keeping at
+    # all. Gate 1 went from 19% of a lap to 5%. The dead time is real, but the
+    # answer to it is not a controller that has been tuned into doing nothing.
+    frequency = DESIGN_FREQUENCY_RAD_S
     k_e, k_d = critically_damped_gains(car.wheelbase_m, frequency=frequency)
     params = ControllerParams(
         line=control,
@@ -140,22 +136,16 @@ def build(
         a_accel_eff=car.a_accel_m_s2,
         a_brake_eff=car.a_brake_m_s2,
         kappa_max_eff=1.0 / requested,
-        # Lookahead, in seconds of travel plus a floor. The seconds are the
-        # measured steering dead time: the wheels take about ten control steps to
-        # reach a commanded angle, so by the time they get there the car has
-        # moved on, and aiming at where it is now is aiming at the past. Gate 1
-        # failed with k_v = 0.15 -- half the lag -- and the trace shows exactly
-        # that failure: the steering command swinging full-scale between
-        # consecutive steps while the wheels chase it, saturated 28% of the time,
-        # and the line missed by up to 285 mm in a 200 mm corridor.
-        k_v=min(steer_lag_s, SCALAR_BOUNDS["k_v"].high),
+        # Lookahead: about two wheelbases at rest, growing with speed. Short,
+        # and deliberately shorter than the dead time would justify. Setting
+        # k_v to the measured 0.33 s lag gives a 1.2 m lookahead at corner
+        # speed, and this track's tight corners are 0.5 m in radius -- the
+        # lookahead point ends up most of the way round the bend and pure
+        # pursuit aims straight across it. Tried, and Gate 1 got worse.
+        k_v=0.15,
         L_0=2.0 * car.wheelbase_m,
         L_min=car.wheelbase_m,
-        # Room for the lag at top speed: 6.9 m/s x 0.33 s is 2.3 m on its own.
-        L_max=min(
-            steer_lag_s * car.v_max_m_s + 2.0 * car.wheelbase_m,
-            SCALAR_BOUNDS["L_max"].high,
-        ),
+        L_max=1.5,
         # Left at 1.0 deliberately. The wheels only reach about 0.62 of the
         # commanded angle at speed, but scaling both blend weights up by 1/0.62
         # to compensate made Gate 1 worse, not better: the two terms already

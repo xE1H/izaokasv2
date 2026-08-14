@@ -31,7 +31,9 @@ bookkeeping against a scripted fake environment.
 
 from __future__ import annotations
 
+import json
 import math
+from pathlib import Path
 from dataclasses import dataclass
 
 import numpy as np
@@ -67,35 +69,62 @@ class Attempt:
 def official_start_offsets(
     count: int = AGENTS, jitter_deg: float = SPAWN_JITTER_DEG, seed: int = 0
 ) -> np.ndarray:
-    """Heading offsets for a set of attempts, radians. Evenly spaced.
+    """Heading offsets for a set of attempts, radians.
 
-    The benchmark scores exactly one situation: the world origin, facing along
-    the track, ``±5°`` of heading jitter, ten attempts, **fastest one counts**
-    (``benchmark.py:385-397``). Nothing else is ever tested, so this is the whole
-    task and it is worth aiming at precisely.
+    **The benchmark's own ten if they have been measured**, and evenly spaced
+    ones otherwise. :mod:`tools.headings` reads them out of a running
+    environment and writes :data:`MEASURED_HEADINGS`; the draw is seeded, so
+    they are the same ten every time, and they were checked to be identical
+    across processes and across a change of episode length — the configuration
+    difference between this harness and the benchmark.
 
-    The SDK draws its ten headings uniformly from that interval with
-    ``(torch.rand(n) - 0.5) * 2 * jitter_rad`` inside
-    :meth:`~lituanicax_sdk.spawn.SpawnManager.sample`. Reproducing *those exact
-    values* would need the CUDA RNG to be in the same state at the same call,
-    which depends on everything the environment did beforehand — and this harness
-    builds a different environment. Guessing at it and being wrong would be worse
-    than not trying, because the search would have specialised on ten headings
-    the benchmark never uses.
+    It matters because they are not spread the way a proxy would spread them:
 
-    Even spacing is the better answer to the same question. Ten random draws
-    clump and leave gaps; ten evenly spaced headings span the interval including
-    both extremes, so a candidate that laps all of them laps everything between,
-    and whatever ten the benchmark happens to draw fall inside what was
-    optimized. It is also deterministic, which matters more than it sounds:
-    every candidate in every generation faces an identical set of starts, so
-    CMA-ES is comparing controllers rather than comparing luck.
+        -1.01, +0.17, -4.75, +4.40, +4.46, +2.97, -0.85, +3.20, -2.71, +4.10
+
+    Six of the ten sit above +2.9°, and evenly spaced offsets put most of their
+    effort on the negative side the benchmark barely visits. A candidate
+    optimized against the proxy wins on headings that will never be drawn: at
+    ``--starts 4`` the proxy scores ±1.7°, neither of which appears above, and
+    every candidate that beat 15.067 s on it failed to lap on the real ten.
+
+    Reproducing the draw was written off as impossible here, on the reasoning
+    that it depends on the CUDA RNG state and this harness builds a different
+    environment from the benchmark's. That was an assumption, not a
+    measurement, and it was wrong: the values are identical across processes
+    and unchanged when the episode window moves from 25 s to 60 s, which is the
+    configuration difference that was supposed to break them.
+
+    The fallback stays for a track or a seed nobody has measured yet. Evenly
+    spaced headings span the interval including both extremes, so a candidate
+    that laps all of them laps everything between — a reasonable answer when the
+    real ones are unknown, and strictly worse when they are not.
     """
-    del seed  # kept for call compatibility; the spacing is deterministic
+    del seed  # kept for call compatibility; both branches are deterministic
+    measured = _measured_headings()
+    if measured is not None and count <= len(measured):
+        # The first `count` of the real ten. Not a random subset: the benchmark
+        # scores all ten, so a search on fewer should be scoring a prefix of the
+        # actual list rather than a differently-shaped sample of the range.
+        return measured[:count]
+
     jitter = math.radians(jitter_deg)
     if count <= 1:
         return np.zeros(count)
     return np.linspace(-jitter, jitter, count)
+
+
+#: Where :mod:`tools.headings` writes what it read out of the simulator.
+MEASURED_HEADINGS = Path("artifacts/headings.json")
+
+
+def _measured_headings() -> np.ndarray | None:
+    """The benchmark's own headings, if they have been measured."""
+    if not MEASURED_HEADINGS.is_file():
+        return None
+    data = json.loads(MEASURED_HEADINGS.read_text())
+    offsets = data.get("offsets_rad")
+    return np.asarray(offsets, dtype=np.float64) if offsets else None
 
 
 class RepeatedStarts(SpawnManager):

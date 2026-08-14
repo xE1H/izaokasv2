@@ -123,6 +123,11 @@ SCALAR_BOUNDS: dict[str, Bound] = {
     #    to slide does not need the wheels to point all the way round the corner.
     #    At 1.0 the ceiling is inert and the profile is the one that came before.
     "steer_ratio_eff": Bound(0.35, 1.0),
+    #    Sideslip the reference asks for, per 1/m of curvature. This is the one
+    #    term that lets the car beat the point-mass model: everything else
+    #    assumes it goes where its wheels point, and at 41% steering saturation
+    #    it demonstrably cannot. At 0 the law is the one that produced 15.067 s.
+    "slip_gain": Bound(0.0, 0.20),
 }
 
 #: Corridor for the line, metres either side of the centerline. Matches
@@ -178,6 +183,7 @@ class ControllerParams:
     k_beta: float = 0.0
     k_rotate: float = 0.0
     steer_ratio_eff: float = 1.0
+    slip_gain: float = 0.0
 
     # ──────────────────────────────────────────────────────────────────────
     #  Vector conversion

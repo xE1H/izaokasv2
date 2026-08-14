@@ -114,6 +114,13 @@ class Reference:
 #: against the 20 mm sample spacing.
 GRADIENT_WINDOW_M = 0.15
 
+#: Most sideslip the reference will ever ask for, radians. About 23°.
+#:
+#: A cap rather than a bound on the gain, because what matters is the angle the
+#: car is asked to hold and that scales with curvature. Beyond this the car is
+#: not cornering quickly, it is spinning, and the lap ends against a wall.
+MAX_SLIP_RAD = 0.40
+
 
 def _periodic_smooth(values: np.ndarray, width: int) -> np.ndarray:
     """Moving average around a closed loop."""
@@ -226,6 +233,7 @@ GAIN_NAMES = (
     "k_r",
     "k_beta",
     "k_rotate",
+    "slip_gain",
 )
 
 
@@ -360,12 +368,35 @@ class Controller:
         # exactly, so the search decides whether any of this is worth using.
         sideslip = torch.atan2(car.speed_lateral, speed.abs().clamp(min=0.05))
 
+        # How sideways the car is *meant* to be, and this is the part that stops
+        # the law being purely kinematic.
+        #
+        # Driving the sideslip to zero says the car should always go where its
+        # wheels point. That is what a well-behaved road car does and it is not
+        # what a fast lap here looks like: the diagnostic has the steering at the
+        # stop for 41% of the lap, which means the wheels cannot be pointed round
+        # the corner at all, and the only remaining way to rotate is to let the
+        # car slide. Asking for a slip angle proportional to how tight the corner
+        # is, and in the direction it turns, makes that a *plan* rather than an
+        # error to suppress — the same feedback then builds the slide going in
+        # and catches it coming out, with no mode switch.
+        #
+        # One parameter rather than a profile, because the population that
+        # reproduces is small and twenty more knots would not be searchable. At
+        # slip_gain = 0 this is exactly the law that produced the 15.067 s
+        # baseline, so the search cannot do worse than where it started.
+        slip_target = torch.clamp(
+            gains["slip_gain"] * self._at(reference.kappa, s),
+            -MAX_SLIP_RAD,
+            MAX_SLIP_RAD,
+        )
+
         steer = (
             gains["w_pp"] * pursuit
             + gains["w_ff"] * feedforward
             + feedback
             + gains["k_r"] * yaw_short
-            - gains["k_beta"] * sideslip
+            - gains["k_beta"] * (sideslip - slip_target)
         ).clamp(-self.max_steer_rad, self.max_steer_rad)
 
         # ── Throttle ──────────────────────────────────────────────────────

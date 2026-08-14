@@ -21,6 +21,7 @@ from lituanicax_sdk.vehicle import VEHICLE
 from teacher.controller import Controller, Reference, build_reference
 from teacher.params import (
     DIMENSION,
+    SCALAR_BOUNDS,
     LINE_POINTS,
     SPEED_POINTS,
     ControllerParams,
@@ -72,7 +73,7 @@ def test_dimension_matches_the_documented_groups():
     assert DIMENSION == LINE_POINTS + SPEED_POINTS + len(
         ControllerParams.scalar_names()
     )
-    assert DIMENSION == 89
+    assert DIMENSION == 90
 
 
 def test_vector_round_trip():
@@ -121,7 +122,7 @@ def test_out_of_bounds_values_are_clipped_not_rejected():
 
 
 def test_wrong_length_vector_is_rejected():
-    with pytest.raises(ValueError, match="expected 89"):
+    with pytest.raises(ValueError, match="expected 90"):
         ControllerParams.from_vector(np.zeros(12))
 
 
@@ -452,6 +453,50 @@ def test_rotation_braking_only_fires_at_the_steering_stop(circle, robot, make_st
     braking = dynamic(circle, k_rotate=2.0)
     # A 5 m circle at 1 m/s needs almost no steering, so the stop is far away.
     assert float(braking(gentle)[0, 0]) == pytest.approx(float(plain(gentle)[0, 0]))
+
+
+def test_slip_target_is_inert_at_zero(circle, robot, make_state):
+    """The property that lets it be searched from the existing best.
+
+    At slip_gain = 0 the sideslip term drives beta to zero exactly as before, so
+    the law is the one that produced 15.067 s and the search starts from a
+    verified point rather than a hopeful one.
+    """
+    car = make_state(place(robot, radius=RADIUS, theta=0.4, speed=2.5))
+    plain = dynamic(circle, k_beta=1.0)
+    with_target = dynamic(circle, k_beta=1.0, slip_gain=0.0)
+    assert torch.allclose(plain(car), with_target(car))
+
+
+def test_slip_target_asks_for_more_steering_into_the_corner(
+    circle, robot, make_state
+):
+    """A car pointing where its wheels point is *under* the target, so the term
+    adds steering rather than removing it.
+
+    That is what makes it a plan instead of an error: the same feedback builds
+    the slide going in and catches it coming out, with no mode switch and no
+    slip estimate to threshold on.
+    """
+    car = make_state(place(robot, radius=RADIUS, theta=0.0, speed=2.5))
+    plain = dynamic(circle, k_beta=1.0, slip_gain=0.0)
+    sliding = dynamic(circle, k_beta=1.0, slip_gain=0.15)
+    # The circle turns one way, so more steering means a larger command with the
+    # same sign, not merely a different one.
+    before, after = float(plain(car)[0, 1]), float(sliding(car)[0, 1])
+    assert abs(after) > abs(before)
+    assert (after > 0) == (before > 0), "the extra steering must go into the corner"
+
+
+def test_slip_target_is_capped(circle, robot, make_state):
+    """Past about 23 degrees the car is spinning, not cornering."""
+    from teacher.controller import MAX_SLIP_RAD
+
+    params = ControllerParams(slip_gain=SCALAR_BOUNDS["slip_gain"].high)
+    reference = build_reference(circle, params, v_max=V_MAX)
+    # The circle's curvature times the largest gain, capped.
+    worst = float((params.slip_gain * reference.kappa.abs()).max())
+    assert min(worst, MAX_SLIP_RAD) <= MAX_SLIP_RAD
 
 
 def test_separate_accelerate_and_brake_gains_are_both_used(circle, robot, make_state):

@@ -130,7 +130,21 @@ def build(
     # Ask for the tightest radius the car can hold. If that is beyond what the
     # corridor can deliver, ask for the best the corridor has and record that the
     # track needs more than kinematic steering.
-    requested = car.r_min_m if steerable else widest
+    # The *kinematic* minimum radius, not the measured circle, and deliberately.
+    #
+    # The measured 0.523 m circle was driven at 1.25 m/s under power and includes
+    # the slip that comes with that; the kinematics alone say 0.422 m. Binding
+    # the line to 0.523 m leaves the corridor nothing: the widest it can deliver
+    # is 0.545 m, so the line is pinned to the walls, and once 60 mm is held back
+    # for tracking error no line satisfies the bound at all. Gate 1 measured the
+    # consequence — the car tracked the line to 19 mm and still hit the wall,
+    # because the line was already against it.
+    #
+    # Which figure is right depends on speed and slip, and the honest answer is
+    # that it sits between the two. kappa_max_eff is a search parameter for
+    # exactly this reason, so the warm start takes the end that leaves room to
+    # drive and lets CMA-ES tighten it if the lap time is there.
+    requested = car.geometric_r_min_m if steerable else widest
     # Solved in exactly the basis the search moves, so the warm start is
     # representable without loss. Refitting an 80-point solution onto 40 control
     # points afterwards smooths the apexes off — 137 mm of error at worst against

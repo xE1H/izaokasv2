@@ -1,6 +1,0 @@
-# The SDK defines the car, the crash rules and the lap clock. Changing it makes
-# lap times incomparable between teams, so every change needs a review.
-/lituanicax_sdk/    @MCiuzelis
-
-# Free for teams to change without review.
-/teamcode/

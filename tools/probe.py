@@ -32,6 +32,7 @@ import argparse
 import math
 import os
 import sys
+from pathlib import Path
 
 os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
 
@@ -44,6 +45,12 @@ parser.add_argument(
 )
 parser.add_argument(
     "--allow-cpu", action="store_true", help="Run on CPU. Slow, and cars collide."
+)
+parser.add_argument(
+    "--dump",
+    default=None,
+    metavar="PATH",
+    help="Also write the raw per-step traces here, for diagnosing a measurement.",
 )
 AppLauncher.add_app_launcher_args(parser)
 args_cli, _ = parser.parse_known_args()
@@ -198,6 +205,20 @@ def main() -> int:
     for step in range(TOTAL_STEPS):
         env.step(script(step).to(env.device))
         recorder.add(env.latest_car)
+
+    if args_cli.dump:
+        import numpy as np  # noqa: PLC0415
+
+        path = Path(args_cli.dump)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        np.savez(
+            path,
+            position=recorder.positions(),
+            lateral_envs=np.array(list(lateral_envs)),
+            lag_env=np.array(lag_env),
+            **{field: recorder.array(field) for field in Recorder.FIELDS},
+        )
+        print(f"[probe] raw traces -> {path}")
 
     measured, notes = analyse(recorder, env.robot.data, lateral_envs, lag_env)
 

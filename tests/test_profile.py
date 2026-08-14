@@ -265,6 +265,54 @@ def test_an_impossible_bound_is_reported_not_faked(official):
     assert 1.0 / float(np.abs(kappa).max()) == pytest.approx(widest, rel=0.05)
 
 
+def test_the_steering_ceiling_is_inert_at_a_ratio_of_one(official):
+    """The property that makes it safe to add mid-search.
+
+    At ``steer_ratio = 1`` the wheels lose nothing to speed, so the ceiling has
+    no opinion and the profile is exactly the one that came before it. The search
+    then starts from the behaviour it already has and tightens only if that pays.
+    """
+    from tools.profile import steering_ceiling
+
+    _, _, kappa = offset_path(official, np.zeros(official.num_samples))
+    ceiling = steering_ceiling(
+        kappa, wheelbase_m=0.224, max_steer_rad=0.488, steer_ratio=1.0, v_max=6.92
+    )
+    assert np.allclose(ceiling, 6.92)
+
+
+def test_the_steering_ceiling_never_orders_a_stall(official):
+    """A reference below the stall threshold is a reference to be disqualified.
+
+    The first version floored at 0.1 m/s against a stall rule that fires at 4% of
+    top speed, 0.28 m/s. Worse, it fired everywhere: this track's centerline asks
+    for 1.12 of full lock at its tightest, so every profile hit the floor.
+    """
+    from lituanicax_sdk.rules import STALL_SPEED_FRACTION
+    from tools.profile import steering_ceiling
+
+    _, _, kappa = offset_path(official, np.zeros(official.num_samples))
+    v_max = 6.92
+    ceiling = steering_ceiling(
+        kappa, wheelbase_m=0.224, max_steer_rad=0.488, steer_ratio=0.5, v_max=v_max
+    )
+    assert ceiling.min() > STALL_SPEED_FRACTION * v_max
+
+
+def test_the_steering_ceiling_slows_the_car_for_tight_corners(official):
+    """It has to actually bind somewhere, or it is decoration."""
+    from tools.profile import steering_ceiling
+
+    _, _, kappa = offset_path(official, np.zeros(official.num_samples))
+    strict = steering_ceiling(
+        kappa, wheelbase_m=0.224, max_steer_rad=0.488, steer_ratio=0.4, v_max=6.92
+    )
+    # Tighter corners get a lower ceiling than the straights.
+    tight = np.abs(kappa) > np.percentile(np.abs(kappa), 90)
+    open_track = np.abs(kappa) < np.percentile(np.abs(kappa), 10)
+    assert strict[tight].mean() < strict[open_track].mean()
+
+
 def test_widest_achievable_radius_bounds_the_car(official):
     """Gate 0's decisive number: can the car physically steer this track?
 

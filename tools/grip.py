@@ -49,6 +49,11 @@ parser = argparse.ArgumentParser(description="Measure the real cornering limit."
 parser.add_argument("--out", default="artifacts/grip.json")
 parser.add_argument("--scale", type=float, default=None)
 parser.add_argument("--steps", type=int, default=900)
+parser.add_argument(
+    "--update",
+    default="artifacts/dynamics.json",
+    help="Probe file to write the corrected cornering limit into. '' to skip.",
+)
 parser.add_argument("--allow-cpu", action="store_true")
 AppLauncher.add_app_launcher_args(parser)
 args_cli, _ = parser.parse_known_args()
@@ -197,7 +202,47 @@ def main() -> int:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(summary, indent=2))
     print(f"\n[grip] written to {path}")
+
+    if args_cli.update:
+        _update_dynamics(summary, Path(args_cli.update))
     return 0
+
+
+def _update_dynamics(summary: dict, path: Path) -> None:
+    """Write the corrected cornering limit back into the probe's own file.
+
+    One file, one truth: everything downstream — the warm start, the speed
+    profile, the diagnostic — reads ``dynamics.json``, and leaving a better
+    measurement of the same quantity sitting in a second file would guarantee
+    that some of them keep using the worse one.
+
+    The two figures mean what they say here. ``a_lat_max`` is the highest the car
+    **held** for a second at any steering angle, whether or not it eventually
+    went over — a second is longer than any corner on this track, so it is
+    available. ``rollover`` is the lowest sustained figure that ended with the
+    car on its roof, which is where holding it indefinitely stops working.
+    """
+    if not path.is_file():
+        print(f"[grip] no {path} to update.")
+        return
+
+    held = [row["held_a_lat"] for row in summary["levels"]]
+    tipped = [
+        row["held_a_lat"] for row in summary["levels"] if row["ended"] == "tipped"
+    ]
+    data = json.loads(path.read_text())
+    was = data.get("a_lat_max_m_s2")
+    data["a_lat_max_m_s2"] = max(held)
+    if tipped:
+        data["rollover_a_lat_m_s2"] = min(tipped)
+    data["a_lat_effective_m_s2"] = min(
+        data["a_lat_max_m_s2"], data.get("rollover_a_lat_m_s2") or float("inf")
+    )
+    path.write_text(json.dumps(data, indent=2))
+    print(
+        f"[grip] {path}: a_lat_max {was:.2f} -> {data['a_lat_max_m_s2']:.2f} m/s^2, "
+        f"effective {data['a_lat_effective_m_s2']:.2f}"
+    )
 
 
 if __name__ == "__main__":

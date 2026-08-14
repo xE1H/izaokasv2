@@ -237,7 +237,7 @@ def test_the_curvature_bound_is_respected(official, radius):
     )
     assert np.abs(n).max() <= DEFAULT_HALF_WIDTH_M + 1e-9
     assert report["within_kappa_max"], report
-    assert not report.get("fell_back_to_centerline"), report
+    assert not report.get("fell_back_to_widest_line"), report
     _, _, kappa = offset_path(official, n)
     assert float(np.abs(kappa).max()) <= kappa_max * 1.001
 
@@ -248,13 +248,21 @@ def test_an_impossible_bound_is_reported_not_faked(official):
     Asking for more must come back saying so, rather than quietly returning a
     line that violates the bound — a silently unsteerable warm start would show
     up much later as a teacher that cannot complete a lap.
+
+    What comes back instead is the flattest line the corridor allows: the
+    closest thing to satisfying the bound that exists. Returning the centerline
+    would be returning the line furthest from satisfying it.
     """
     n, report = solve_line(
         official, half_width=DEFAULT_HALF_WIDTH_M, kappa_max=1.0 / 0.80
     )
     assert not report["within_kappa_max"]
-    assert report.get("fell_back_to_centerline")
-    assert np.abs(n).max() == 0.0
+    assert report.get("fell_back_to_widest_line")
+    from tools.profile import widest_achievable_radius
+
+    widest, _ = widest_achievable_radius(official, half_width=DEFAULT_HALF_WIDTH_M)
+    _, _, kappa = offset_path(official, n)
+    assert 1.0 / float(np.abs(kappa).max()) == pytest.approx(widest, rel=0.05)
 
 
 def test_widest_achievable_radius_bounds_the_car(official):

@@ -280,6 +280,35 @@ def widest_achievable_radius(
     one gradient solve rather than a binary search over
     :func:`racing_line_offsets`.
     """
+    coefficients = _widest_coefficients(
+        geometry,
+        half_width=half_width,
+        control_points=control_points,
+        iterations=iterations,
+        sharpness=sharpness,
+    )
+    basis = torch.tensor(
+        periodic_basis(geometry.num_samples, control_points), dtype=torch.float64
+    )
+    n = (basis @ coefficients).detach().numpy()
+    _, _, kappa = offset_path(geometry, n)
+    return 1.0 / max(float(np.abs(kappa).max()), 1e-9), n
+
+
+def _widest_coefficients(
+    geometry,
+    *,
+    half_width: float,
+    control_points: int,
+    iterations: int = 1500,
+    sharpness: float = 40.0,
+) -> torch.Tensor:
+    """The basis coefficients of the flattest line the corridor allows.
+
+    Split out because it is also the only sensible starting point for the
+    min-time solve: it is the one line guaranteed to satisfy a curvature bound
+    that any line can satisfy.
+    """
     basis = torch.tensor(
         periodic_basis(geometry.num_samples, control_points), dtype=torch.float64
     )
@@ -299,10 +328,7 @@ def widest_achievable_radius(
         optimizer.step()
         with torch.no_grad():
             coefficients.clamp_(-half_width, half_width)
-
-    n = (basis @ coefficients).detach().numpy()
-    _, _, kappa = offset_path(geometry, n)
-    return 1.0 / max(float(np.abs(kappa).max()), 1e-9), n
+    return coefficients.detach()
 
 
 def racing_line_offsets(
@@ -370,14 +396,33 @@ def racing_line_offsets(
     ceiling = torch.tensor(v_max, dtype=torch.float64)
 
     report: dict = {"kappa_max_requested": kappa_max, "control_points": control_points}
-    coefficients = torch.zeros(control_points, dtype=torch.float64, requires_grad=True)
+    # Start from the flattest line the corridor allows, not from the centerline.
+    # The centerline is the *tightest* thing in the corridor — on the official
+    # track it peaks at R = 0.366 m against a corridor that can manage 0.545 m —
+    # so a bound anywhere near what the car needs starts badly violated, and the
+    # min-time objective pulls the other way because tighter corners are a
+    # shorter path. Measured: with R_min at 0.523 m against a 0.545 m ceiling,
+    # starting from the centerline found nothing feasible at any penalty weight
+    # and fell back to the centerline itself. From the flattest line the bound
+    # holds at the start and the penalty only has to keep it.
+    start = (
+        torch.zeros(control_points, dtype=torch.float64)
+        if kappa_max is None
+        else _widest_coefficients(
+            geometry, half_width=half_width, control_points=control_points
+        )
+    )
+    coefficients = start.clone().requires_grad_(True)
     best_n: np.ndarray | None = None
     best_time = float("inf")
 
     # A penalty continuation, then a gentle tightening of the bound itself if the
     # penalty alone cannot close the last fraction of a percent. Escalating the
     # weight is much cheaper in lap time than over-tightening the bound.
-    stages = [0.0] if kappa_max is None else [0.0, 1e2, 1e3, 1e4, 1e5, 1e6]
+    # No unpenalized stage when there is a bound: the stages share one set of
+    # coefficients, so running the free objective first would spend its whole
+    # budget pulling the feasible starting line back into the corners.
+    stages = [0.0] if kappa_max is None else [1e2, 1e3, 1e4, 1e5, 1e6]
     requested = kappa_max
 
     for tighten in range(3):
@@ -440,8 +485,11 @@ def racing_line_offsets(
         report["tightened_to"] = kappa_max
 
     if best_n is None:
-        # Nothing feasible was found; the centerline always is.
-        best_n = np.zeros(count)
+        # Nothing satisfied the bound. Fall back to the flattest line the
+        # corridor allows, which is the closest to satisfying it that exists —
+        # not the centerline, which is the furthest.
+        basis_np = periodic_basis(count, control_points)
+        best_n = basis_np @ start.numpy()
         _, segments, true_kappa = offset_path(geometry, best_n)
         peak = float(np.abs(true_kappa).max())
         report.update(
@@ -449,7 +497,8 @@ def racing_line_offsets(
                 "peak_kappa": peak,
                 "peak_radius_m": 1.0 / max(peak, 1e-9),
                 "path_length_m": float(segments.sum()),
-                "fell_back_to_centerline": True,
+                "coefficients": start.numpy().copy(),
+                "fell_back_to_widest_line": True,
             }
         )
 

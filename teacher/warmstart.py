@@ -84,18 +84,37 @@ def critically_damped_gains(
     return frequency**2 * scale, 2.0 * frequency * scale
 
 
+#: Corridor the warm-start line leaves unused, metres, as room to be wrong in.
+#:
+#: The line solve will happily use every millimetre it is given, and the first
+#: Gate 1 attempt did: the reference peaked at 0.180 m against a wall at 0.201 m,
+#: so the controller had 21 mm of tracking error to spend and its median error
+#: was 60 mm. Every car crashed the first time |n| passed 0.20. A line that
+#: assumes perfect tracking is not a line the car can drive, and the fastest one
+#: on paper is the one that assumes it hardest.
+#:
+#: The search is not bound by this — ``LINE_BOUND`` still spans the full ±0.18 —
+#: so CMA-ES can spend the margin later, once it is being paid for in lap time
+#: rather than assumed for free.
+TRACKING_MARGIN_M = 0.06
+
+
 def build(
     geometry: TrackGeometry,
     car: Measured,
     *,
     half_width: float = DEFAULT_HALF_WIDTH_M,
+    margin: float = TRACKING_MARGIN_M,
 ) -> tuple[ControllerParams, dict]:
     """The warm-start parameters, and a report on how they were chosen.
 
     The report is the interesting half: it records whether the car can steer this
     track at all, which is the question Gate 0 exists to answer.
     """
+    # Gate 0's question is about the track and the car, not about how much room
+    # this particular warm start leaves itself, so it keeps the full corridor.
     widest, _ = widest_achievable_radius(geometry, half_width=half_width)
+    half_width = max(half_width - margin, 0.01)
     centerline_radius = 1.0 / float(geometry.kappa.abs().max())
     steerable = car.r_min_m <= widest
 
@@ -197,6 +216,8 @@ def build(
             "fitted_line": float(profile_lap_time(geometry, fitted, **evaluation)),
         },
         "gains": {"k_e": k_e, "k_d": k_d},
+        "line_half_width_m": half_width,
+        "tracking_margin_m": float(margin),
         "steer_lag_s": steer_lag_s,
         "design_frequency_rad_s": frequency,
         "lookahead_s": float(params.k_v),
@@ -238,7 +259,8 @@ def format_report(report: dict) -> str:
         "",
         f"  racing line: R_min {report['line']['peak_radius_m']:.3f} m, "
         f"path {report['line'].get('path_length_m', float('nan')):.2f} m, "
-        f"peak offset {report['peak_offset_m']:.3f} m",
+        f"peak offset {report['peak_offset_m']:.3f} m "
+        f"of the {report['line_half_width_m']:.3f} m it was allowed",
         f"  as {LINE_POINTS} control points: "
         f"R_min {report['fitted_peak_radius_m']:.3f} m, "
         f"{report['line_fit_error_mm']:.1f} mm from the solved line",

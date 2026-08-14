@@ -125,6 +125,15 @@ def _falloff(speed: np.ndarray, v_max: float) -> np.ndarray:
     return np.clip(1.0 - speed / max(v_max, 1e-9), FALLOFF_FLOOR, 1.0)
 
 
+#: Slowest the steering ceiling may order the car to go, m/s.
+#:
+#: Comfortably above the stall rule's threshold — 4% of top speed, 0.28 m/s on
+#: this car — because a reference that asks for less than that is asking the car
+#: to be disqualified. 1.5 m/s is also roughly what the tightest corner here is
+#: taken at, so the floor binds rarely and never fatally.
+STEERING_FLOOR_M_S = 1.5
+
+
 def steering_ceiling(
     kappa: np.ndarray,
     *,
@@ -156,9 +165,15 @@ def steering_ceiling(
     loss = max(1.0 - float(steer_ratio), 1e-6)
     # ratio(v) = 1 - loss·v/v_max  >=  needed
     ceiling = v_max * (1.0 - needed) / loss
-    # A corner needing more than full lock at a standstill is not steerable at
-    # any speed; leave a crawl rather than a zero the profile cannot divide by.
-    return np.clip(ceiling, 0.1, v_max)
+    # Where the corner needs more than full lock the expression goes negative,
+    # and the floor is doing real work: this track's centerline asks for 1.12 of
+    # full lock at its tightest, so *every* profile hits it. A floor of 0.1 m/s
+    # is below the stall rule's own threshold (4% of top speed, 0.28 m/s here),
+    # so the reference would have been ordering the car to fail. And a corner
+    # that kinematics cannot steer is not a corner the car cannot take — it can
+    # slide through it, which is why steer_ratio_eff is searched rather than
+    # believed.
+    return np.clip(ceiling, STEERING_FLOOR_M_S, v_max)
 
 
 def three_pass_profile(

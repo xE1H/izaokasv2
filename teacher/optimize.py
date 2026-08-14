@@ -69,8 +69,12 @@ parser.add_argument(
 parser.add_argument(
     "--min-completions",
     type=int,
-    default=8,
-    help="Starts a candidate must finish to be scored on time (default 8 of 10).",
+    default=1,
+    help=(
+        "Starts a candidate must finish to be scored on time. Default 1, "
+        "matching the leaderboard, which takes the fastest of ten attempts and "
+        "does not care about the other nine."
+    ),
 )
 parser.add_argument("--warmstart", default="artifacts/teacher-warmstart.json")
 parser.add_argument("--out", default="artifacts/teacher.json")

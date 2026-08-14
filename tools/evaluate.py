@@ -279,8 +279,29 @@ class _Progress:
 
 #: The crash branch bottoms out here — worse than any lap will ever be, so a
 #: valid lap always beats a crash however far the crash got.
-CRASH_FLOOR = 20.0
-CRASH_CEILING = 40.0
+#: The crash branch's range. Both figures are far above any lap time the
+#: simulator can produce, and that is the point: the attempt window is 25 s in
+#: the search and 60 s when scoring, so no valid lap can reach 100.
+#:
+#: They used to be 20 and 40, chosen when a lap was assumed to be 12-16 s. The
+#: real car laps in 20-24 s, and the branches overlapped: a car that got all the
+#: way round but had its lap voided for touching a wall scored 20.0, beating a
+#: perfectly valid 22 s lap. The search was being offered a better score for
+#: crashing on the last corner than for finishing.
+CRASH_FLOOR = 100.0
+CRASH_CEILING = 200.0
+
+#: Seconds of tie-break given to a candidate that finishes every start over one
+#: that finishes a single start at the same pace.
+#:
+#: Deliberately tiny. The leaderboard takes the *fastest of ten attempts*, so
+#: nine failures cost nothing and a candidate with one golden run is scored on
+#: that run — the objective has to agree, or the search is optimizing a
+#: different competition. This exists only to separate candidates that are
+#: otherwise equal, because a teacher that laps once in ten produces
+#: demonstrations Phase 3 cannot learn much from. At 0.1 s it can never
+#: outweigh a real difference in pace.
+CONSISTENCY_BONUS_S = 0.1
 
 
 def objective(
@@ -288,21 +309,28 @@ def objective(
 ) -> tuple[float, dict]:
     """Score one candidate from its attempts. Lower is better.
 
-    ``J = min(valid lap times)`` when the candidate completed at least
-    ``min_completions`` of its starts, and ``40 - 20 * best_progress`` otherwise.
+    ``J`` is the candidate's **fastest valid lap**, minus a small tie-break for
+    consistency; a candidate with no valid lap gets
+    ``CRASH_CEILING - 100 * best_progress`` instead.
 
-    Two properties matter. The crash branch never reaches 20, so **a valid lap
-    always dominates a crash** — the search can never be tempted to trade a
-    finished lap for a spectacular failure. And it has a gradient inside, so early
-    generations climb out: getting 60% of the way round scores 28, spinning on the
-    line scores 40.
+    **This mirrors the leaderboard, which takes the fastest of ten attempts.**
+    Nine failures out of ten cost nothing there, so a candidate with one golden
+    run is scored on that run, and the objective has to agree or the search is
+    optimizing a different competition than the one being entered.
 
-    **The completion floor is not where risk gets spent.** The scoring rule allows
-    nine attempts in ten to fail for free, and exploiting that is worth real time
-    — but it belongs to the student in Phase 4, not to the teacher. A teacher that
-    survives three starts in ten produces demonstrations that are inconsistent and
-    partly truncated, and behaviour cloning on those is far worse than cloning a
-    repeatable driver.
+    An earlier version required 8 completions out of 10 before scoring a
+    candidate on time at all, on the argument that a teacher surviving three
+    starts in ten produces demonstrations Phase 3 cannot learn from. That
+    argument is real but it was paid for far too dearly: every candidate that
+    completed a single lap fell to the crash branch at exactly ``20.000``,
+    whatever its lap time, so five generations of the search could not tell a
+    20.8 s lap from a 24.1 s one. The consistency preference survives as
+    :data:`CONSISTENCY_BONUS_S`, where it can break ties and nothing else.
+
+    Two properties still matter. The crash branch starts above any reachable lap
+    time, so **a valid lap always dominates a crash** — including a slow one,
+    which the old constants got backwards. And it has a gradient inside, so early
+    generations can climb out: 60% of the way round beats spinning on the line.
     """
     valid = sorted(a.lap_time_s for a in attempts if a.valid)
     reached = max((a.progress for a in attempts), default=0.0)
@@ -317,7 +345,12 @@ def objective(
 
     if valid and len(valid) >= min_completions:
         detail["branch"] = "lap"
-        return valid[0], detail
+        # Fastest lap, exactly as the leaderboard reads it, with the tie-break
+        # scaled so a candidate finishing every start gains the full bonus and
+        # one finishing a single start gains nothing.
+        spare = max(num_starts - 1, 1)
+        consistency = CONSISTENCY_BONUS_S * (len(valid) - 1) / spare
+        return valid[0] - consistency, detail
 
     detail["branch"] = "crash"
     # Progress can exceed 1 for a car that got round but had the lap voided; cap

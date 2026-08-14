@@ -23,6 +23,7 @@ import torch
 
 from tools.evaluate import (
     AGENTS,
+    CONSISTENCY_BONUS_S,
     CRASH_CEILING,
     CRASH_FLOOR,
     NO_LAP,
@@ -274,9 +275,47 @@ def fail(progress, outcome="crashed"):
 def test_a_valid_lap_scores_its_best_time():
     attempts = [lap(14.0), lap(13.2), lap(15.9)] + [fail(0.5)] * 7
     score, detail = objective(attempts, min_completions=3, num_starts=10)
-    assert score == pytest.approx(13.2)
+    assert score == pytest.approx(13.2, abs=CONSISTENCY_BONUS_S)
     assert detail["branch"] == "lap"
     assert detail["completions"] == 3
+
+
+def test_one_golden_run_is_scored_on_that_run():
+    """The leaderboard takes the fastest of ten attempts and ignores the rest.
+
+    A candidate that crashes nine times and puts in one blinding lap is, for
+    scoring purposes, a fast car. An objective that refuses to score it is
+    optimizing a different competition than the one being entered.
+    """
+    golden = [lap(13.0)] + [fail(0.4)] * 9
+    score, detail = objective(golden, min_completions=1, num_starts=10)
+    assert detail["branch"] == "lap"
+    assert score == pytest.approx(13.0, abs=CONSISTENCY_BONUS_S)
+
+
+def test_lapping_candidates_are_separated_by_pace():
+    """The bug this replaced: every candidate that lapped at all scored 20.000.
+
+    With the completion floor at 8, a single completed lap put the candidate on
+    the crash branch at exactly full progress — so a 20.8 s lap and a 24.1 s lap
+    were worth precisely the same, and the search spent five generations unable
+    to tell them apart.
+    """
+    quick = objective([lap(20.8)] + [fail(0.4)] * 9, min_completions=1, num_starts=10)
+    slow = objective([lap(24.1)] + [fail(0.4)] * 9, min_completions=1, num_starts=10)
+    assert quick[0] < slow[0] - 3.0
+
+
+def test_consistency_breaks_ties_and_nothing_more():
+    """It must never be able to outrank a genuinely faster car."""
+    every = objective([lap(15.0)] * 10, min_completions=1, num_starts=10)[0]
+    once = objective([lap(15.0)] + [fail(0.5)] * 9, min_completions=1, num_starts=10)[0]
+    assert every < once, "at equal pace, prefer the car that finishes"
+
+    faster_but_fragile = objective(
+        [lap(14.0)] + [fail(0.5)] * 9, min_completions=1, num_starts=10
+    )[0]
+    assert faster_but_fragile < every, "half a second of pace outweighs the tie-break"
 
 
 def test_a_valid_lap_always_beats_a_crash():
@@ -295,9 +334,8 @@ def test_the_crash_branch_rewards_getting_further():
     assert nowhere == pytest.approx(CRASH_CEILING)
 
 
-def test_the_completion_floor_rejects_a_fast_but_fragile_candidate():
-    """Teacher aggression is not where risk gets spent — a driver that survives
-    three starts in ten produces demonstrations behaviour cloning cannot use."""
+def test_the_completion_floor_still_works_when_asked_for():
+    """Not the default any more, but Phase 3 may want a repeatable teacher."""
     fragile = [lap(12.0), lap(12.4), lap(12.9)] + [fail(0.6)] * 7
     score, detail = objective(fragile, min_completions=8, num_starts=10)
     assert detail["branch"] == "crash"
@@ -306,7 +344,21 @@ def test_the_completion_floor_rejects_a_fast_but_fragile_candidate():
     reliable = [lap(13.5)] * 8 + [fail(0.6)] * 2
     score, detail = objective(reliable, min_completions=8, num_starts=10)
     assert detail["branch"] == "lap"
-    assert score == pytest.approx(13.5)
+    assert score == pytest.approx(13.5, abs=CONSISTENCY_BONUS_S)
+
+
+def test_a_slow_valid_lap_beats_a_voided_one():
+    """The inversion the old constants had, and it was the wrong way round.
+
+    A car can get all the way round and still have the lap voided by touching a
+    wall. At a crash floor of 20 that scored 20.0, which beat a perfectly valid
+    22 s lap — the search was being offered a better score for crashing on the
+    last corner than for finishing. Real laps here are 20-24 s, so the floor has
+    to sit above anything the attempt window can produce.
+    """
+    valid_but_slow = objective([lap(24.0)], min_completions=1, num_starts=1)[0]
+    voided_at_the_line = objective([fail(1.0)], min_completions=1, num_starts=1)[0]
+    assert valid_but_slow < voided_at_the_line
 
 
 def test_progress_beyond_one_cannot_undercut_a_lap():

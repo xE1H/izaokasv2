@@ -1,6 +1,6 @@
 """The controller's parameters: what CMA-ES searches over.
 
-Seventy numbers in four groups:
+Seventy-three numbers in five groups:
 
 ======================  =====  ===============================================
 group                   count  what it does
@@ -9,7 +9,15 @@ group                   count  what it does
 ``speed_scale``           15   local multiplier on the quasi-static profile
 effective limits           4   a_lat, a_accel, a_brake, kappa_max
 gains                     11   lookahead, steering blend, feedback
+dynamic terms              3   yaw-rate, sideslip, rotation-by-braking
 ======================  =====  ===============================================
+
+**The dynamic terms start at zero.** With ``k_r``, ``k_beta`` and ``k_rotate``
+all zero the law is exactly the kinematic one that produced the 17.1 s baseline,
+so the search is never handed a worse starting point than it had — it decides
+whether any of them earn their place. They exist because the diagnostic says the
+steering is saturated for 39% of a lap: the geometric terms have run out of
+authority there, and these three are the only ones that can notice.
 
 **Why the speed profile is not parameterized directly.** A free speed at every
 point is mostly physically infeasible, and a search that starts there spends its
@@ -94,6 +102,16 @@ SCALAR_BOUNDS: dict[str, Bound] = {
     "k_p_accel": Bound(0.0, 6.0),
     "k_p_brake": Bound(0.0, 6.0),
     "k_ff": Bound(0.0, 3.0),
+    # ── The dynamic terms. Everything above treats the car as going where its
+    #    wheels point; these three are what notice that it does not.
+    #    Yaw-rate shortfall into steering, radians of steer per rad/s.
+    "k_r": Bound(0.0, 1.5),
+    #    Sideslip into steering — this is the counter-steer, and it has to be
+    #    allowed to be strong enough to catch a slide it did not intend.
+    "k_beta": Bound(0.0, 3.0),
+    #    Yaw-rate shortfall into *braking*, once the steering is at the stop.
+    #    Zero disables it, which is where the warm start starts.
+    "k_rotate": Bound(0.0, 2.0),
 }
 
 #: Corridor for the line, metres either side of the centerline. Matches
@@ -141,6 +159,9 @@ class ControllerParams:
     k_p_accel: float = 2.0
     k_p_brake: float = 2.0
     k_ff: float = 1.0
+    k_r: float = 0.0
+    k_beta: float = 0.0
+    k_rotate: float = 0.0
 
     # ──────────────────────────────────────────────────────────────────────
     #  Vector conversion

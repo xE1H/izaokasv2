@@ -212,7 +212,7 @@ def build(
         # aiming at, and in Gate 1 that put three cars on their roofs. The
         # search raises this the moment it is worth lap time.
         a_lat_eff=_within("a_lat_eff", ROLLOVER_MARGIN * car.a_lat_effective_m_s2),
-        a_accel_eff=_within("a_accel_eff", car.a_accel_m_s2),
+        a_accel_eff=_within("a_accel_eff", car.a_accel_standing_m_s2),
         # Backed off for the same reason, and the probe was explicit about this
         # one: 8.26 m/s^2 is what the car managed in the ten steps before it went
         # over its nose. A speed profile whose backward pass plans on braking the
@@ -251,7 +251,7 @@ def build(
     fitted = basis @ control
     evaluation = dict(
         a_lat=car.a_lat_effective_m_s2,
-        a_accel=car.a_accel_m_s2,
+        a_accel=car.a_accel_standing_m_s2,
         a_brake=car.a_brake_m_s2,
         v_max=car.v_max_m_s,
     )

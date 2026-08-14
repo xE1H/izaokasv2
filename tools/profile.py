@@ -101,6 +101,30 @@ def _polyline_geometry(pos: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
 # ═══════════════════════════════════════════════════════════════════════════
 
 
+#: Fraction of its standing-start acceleration the car still has at top speed.
+#: Not zero, because a profile that plans on exactly zero acceleration at ``v_max``
+#: can never quite reach it and the forward sweep crawls the last fraction.
+FALLOFF_FLOOR = 0.05
+
+
+def _falloff(speed: np.ndarray, v_max: float) -> np.ndarray:
+    """How much of its standing acceleration the car still has at ``speed``.
+
+    A DC motor's torque falls linearly with speed (``dynamics.py:44``), so the
+    acceleration it can produce does too. The probe measured exactly that on this
+    car: 4.9 m/s² near rest, 0.29 m/s² at 6.75 m/s, against a top speed of 6.92.
+
+    Modelling it as one constant — which is what a single ``a_accel`` is — gets
+    the car wrong at both ends. At 2.74 m/s², the average, the profile
+    under-drives it out of every slow corner where it really has 4.9, and plans
+    to reach speeds on the straights that it really cannot. On a car this
+    power-limited that is the largest error in the whole quasi-static model, and
+    correcting it costs no parameters: the shape is fixed and ``a_accel`` simply
+    becomes the standing-start figure rather than an average.
+    """
+    return np.clip(1.0 - speed / max(v_max, 1e-9), FALLOFF_FLOOR, 1.0)
+
+
 def three_pass_profile(
     seg: np.ndarray,
     kappa: np.ndarray,
@@ -118,9 +142,11 @@ def three_pass_profile(
         seg: ``[..., M]`` length of the segment leaving each point, metres.
         kappa: ``[..., M]`` curvature at each point, 1/m. Sign is ignored.
         a_lat: cornering limit, m/s².
-        a_accel: forward acceleration limit, m/s².
+        a_accel: forward acceleration **from a standing start**, m/s². What the
+            car has at ``speed`` is this times :func:`_falloff` — the motor's
+            torque falls off linearly and so does the acceleration.
         a_brake: braking limit, m/s² (positive).
-        v_max: top speed, m/s.
+        v_max: top speed, m/s. Also sets where the acceleration falls to nothing.
         iterations: how many times to sweep forward and back. The passes wrap
             around the loop, so one sweep is not enough — a braking zone that
             starts before the start/finish line has to propagate across it.
@@ -151,7 +177,8 @@ def three_pass_profile(
         # 2. Forward: bounded by what the car can accelerate to.
         for i in range(count):
             j = (i + 1) % count
-            reachable = np.sqrt(speed[..., i] ** 2 + 2.0 * a_accel * seg[..., i])
+            here = a_accel * _falloff(speed[..., i], v_max)
+            reachable = np.sqrt(speed[..., i] ** 2 + 2.0 * here * seg[..., i])
             speed[..., j] = np.minimum(speed[..., j], reachable)
         # 3. Backward: bounded by what it can still brake from.
         for i in range(count - 1, -1, -1):

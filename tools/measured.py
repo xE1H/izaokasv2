@@ -92,6 +92,20 @@ class Measured:
         return self.wheelbase_m / math.tan(VEHICLE.max_steer_rad)
 
     @property
+    def a_accel_standing_m_s2(self) -> float:
+        """Acceleration from rest, m/s² — the top of the motor's torque curve.
+
+        :attr:`a_accel_m_s2` is an *average* to 80% of top speed, which is the
+        wrong number to hand a speed profile that models the falloff itself: it
+        would apply the average shape on top of the average, under-driving the
+        car everywhere. The measured curve's first sample is what is wanted, and
+        on this car it is 4.9 m/s² against an average of 2.74.
+        """
+        if self.accel_curve:
+            return float(max(accel for _, accel in self.accel_curve))
+        return self.a_accel_m_s2
+
+    @property
     def geometric_r_min_m(self) -> float:
         """``L_wb / tan(max_steer)`` — what the kinematics alone would give."""
         import math

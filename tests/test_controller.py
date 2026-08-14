@@ -68,11 +68,11 @@ def place(robot: FakeRobot, *, radius: float, theta: float, speed: float, yaw=No
 # ══════════════════════════════════════════════════════════════════════════
 
 
-def test_dimension_is_the_documented_seventy():
+def test_dimension_is_the_documented_seventy_three():
     assert DIMENSION == LINE_POINTS + SPEED_POINTS + len(
         ControllerParams.scalar_names()
     )
-    assert DIMENSION == 70
+    assert DIMENSION == 73
 
 
 def test_vector_round_trip():
@@ -121,7 +121,7 @@ def test_out_of_bounds_values_are_clipped_not_rejected():
 
 
 def test_wrong_length_vector_is_rejected():
-    with pytest.raises(ValueError, match="expected 70"):
+    with pytest.raises(ValueError, match="expected 73"):
         ControllerParams.from_vector(np.zeros(12))
 
 
@@ -371,6 +371,79 @@ def test_a_braking_feedforward_still_brakes_a_fast_car(controller, robot, make_s
         make_state(place(robot, radius=RADIUS, theta=0.0, speed=target + 0.2))
     )
     assert float(hot[0, 0]) < 0.0, "over the target in a braking zone means brake"
+
+
+def dynamic(circle, **gains):
+    """A controller with the dynamic terms turned on."""
+    params = ControllerParams(**gains)
+    return Controller(
+        circle,
+        build_reference(circle, params, v_max=V_MAX),
+        params,
+        wheelbase_m=WHEELBASE,
+        max_steer_rad=VEHICLE.max_steer_rad,
+    )
+
+
+def test_the_dynamic_terms_are_off_by_default(circle, robot, make_state):
+    """The baseline must survive adding them.
+
+    The kinematic law produced a 17.1 s lap; the search starts from that vector,
+    so with the three new gains at zero the actions have to be bit-identical to
+    what they were. Anything else means the search restarts from somewhere worse
+    than where it left off.
+    """
+    plain = dynamic(circle)
+    car = make_state(place(robot, radius=RADIUS, theta=0.3, speed=2.0))
+    before = plain(car).clone()
+
+    with_zero_gains = dynamic(circle, k_r=0.0, k_beta=0.0, k_rotate=0.0)
+    assert torch.allclose(with_zero_gains(car), before)
+
+
+def test_sideslip_feedback_counter_steers(circle, robot, make_state):
+    """The whole point of the term, and it needs no mode switch to do it.
+
+    A car whose rear has stepped out to the left is sliding right; the correction
+    is to steer *right*, against the direction the geometry is asking for. That
+    falls straight out of subtracting the sideslip.
+    """
+    controller = dynamic(circle, k_beta=2.0)
+    straight = make_state(place(robot, radius=RADIUS, theta=0.0, speed=2.0))
+    neutral = float(controller(straight)[0, 1])
+
+    # Same pose, but the car is moving sideways: positive lateral velocity.
+    sliding = FakeRobot(1)
+    place(sliding, radius=RADIUS, theta=0.0, speed=2.0)
+    sliding.data.root_lin_vel_b[:, 1] = 1.5
+    slid = float(controller(make_state(sliding))[0, 1])
+
+    assert slid < neutral, "a rear stepping out one way must be caught the other"
+
+
+def test_yaw_feedback_asks_for_more_lock_when_under_rotating(
+    circle, robot, make_state
+):
+    """A car going straight on in a corner is not turning as fast as v*kappa."""
+    controller = dynamic(circle, k_r=1.0)
+    plain = dynamic(circle)
+    car = make_state(place(robot, radius=RADIUS, theta=0.0, speed=2.0, yaw=None))
+    # place() puts the car on the circle with the right yaw but no yaw rate, so
+    # it is under-rotating by exactly v*kappa.
+    assert abs(float(controller(car)[0, 1])) > abs(float(plain(car)[0, 1]))
+
+
+def test_rotation_braking_only_fires_at_the_steering_stop(circle, robot, make_state):
+    """Inert while the steering still has authority in hand.
+
+    Otherwise it would be braking the car through every corner it was handling
+    perfectly well, which is a slower lap and a worse baseline.
+    """
+    gentle = make_state(place(robot, radius=RADIUS, theta=0.0, speed=1.0))
+    plain = dynamic(circle)
+    braking = dynamic(circle, k_rotate=2.0)
+    # A 5 m circle at 1 m/s needs almost no steering, so the stop is far away.
+    assert float(braking(gentle)[0, 0]) == pytest.approx(float(plain(gentle)[0, 0]))
 
 
 def test_separate_accelerate_and_brake_gains_are_both_used(circle, robot, make_state):

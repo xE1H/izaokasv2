@@ -28,6 +28,22 @@ which is why the search gets to weight them:
 Throttle is the profile's own gradient as feedforward plus a proportional
 correction, with separate accelerate and brake gains because the car's limits are
 asymmetric — it brakes at roughly 8 m/s² and accelerates at 6.
+
+Those three steering terms are all *kinematic*: each assumes the car goes where
+its wheels point. Measured, it does not — the steering saturates for 39% of a lap
+and the wheels reach only about 75% of the angle they are commanded at cornering
+speed, so the car under-rotates through exactly the corners that decide the lap.
+Three more terms carry the dynamic state that notices:
+
+* **yaw-rate shortfall** ``v·κ_ref − ψ̇`` into steering, which asks for more lock
+  when the corner is not being turned tightly enough;
+* **sideslip** ``β`` subtracted from steering, which *is* counter-steering — it
+  falls out of the sign rather than needing a mode switch;
+* **yaw-rate shortfall into braking**, gated on the steering already being at the
+  stop, for the case where there is no more lock to ask for.
+
+All three start at zero, so the law reduces exactly to the kinematic one and the
+search decides whether they are worth anything.
 """
 
 from __future__ import annotations
@@ -186,6 +202,9 @@ GAIN_NAMES = (
     "k_p_brake",
     "k_ff",
     "a_accel_eff",
+    "k_r",
+    "k_beta",
+    "k_rotate",
 )
 
 
@@ -298,8 +317,34 @@ class Controller:
         feedforward = torch.atan(self.wheelbase_m * self._at(reference.kappa, s))
         feedback = -(gains["k_e"] * error + gains["k_d"] * error_rate)
 
+        # ── What the car is actually doing, as opposed to where it is ─────
+        # Everything above is kinematic: it assumes the car goes where the wheels
+        # point. It does not, and the diagnostic says so — the steering is
+        # saturated for 39% of a lap and the wheels only reach about 75% of the
+        # angle they are asked for, so the car under-rotates through exactly the
+        # corners that decide the lap. These two terms are the whole dynamic
+        # state the controller has, and both are free in `CarState`.
+
+        # Is the car turning as fast as the corner needs? A corner of curvature
+        # kappa taken at v needs a yaw rate of v*kappa. Any shortfall is rotation
+        # the geometry did not deliver, and asking for more steering is the first
+        # thing to try.
+        yaw_wanted = speed * self._at(reference.kappa, s)
+        yaw_short = yaw_wanted - car.yaw_rate
+
+        # How sideways the car is. Positive when the rear has stepped out, and
+        # subtracting it *is* counter-steering — it falls out of the sign rather
+        # than needing a mode switch, so there is no separate "now we are
+        # drifting" branch to get wrong. k_beta at zero recovers the old law
+        # exactly, so the search decides whether any of this is worth using.
+        sideslip = torch.atan2(car.speed_lateral, speed.abs().clamp(min=0.05))
+
         steer = (
-            gains["w_pp"] * pursuit + gains["w_ff"] * feedforward + feedback
+            gains["w_pp"] * pursuit
+            + gains["w_ff"] * feedforward
+            + feedback
+            + gains["k_r"] * yaw_short
+            - gains["k_beta"] * sideslip
         ).clamp(-self.max_steer_rad, self.max_steer_rad)
 
         # ── Throttle ──────────────────────────────────────────────────────
@@ -330,11 +375,28 @@ class Controller:
         reference_accel = torch.as_tensor(
             gains["a_accel_eff"], device=speed.device
         ).clamp(min=1e-3)
-        throttle = (
-            gain * error_speed + gains["k_ff"] * wanted_accel / reference_accel
-        ).clamp(-1.0, 1.0)
+        throttle = gain * error_speed + gains["k_ff"] * wanted_accel / reference_accel
 
-        return torch.stack([throttle, steer / self.max_steer_rad], dim=-1)
+        # ── Rotating the car when the steering cannot ─────────────────────
+        # Once the wheels are at the stop and the car still is not turning
+        # enough, steering has nothing left to give and the only actuator with
+        # any authority over yaw is the longitudinal one. Lifting or braking
+        # moves load onto the front axle and sheds the speed that made the corner
+        # too tight in the first place, so the deficit closes from both sides.
+        #
+        # Gated on the steering actually being saturated, so on a car with
+        # authority in hand this term is inert and the law is the one that
+        # produced the baseline. k_rotate at zero disables it outright, which is
+        # where the warm start puts it — the search decides whether it earns its
+        # place. Braking rather than throttle is deliberate: this car drives all
+        # four wheels, so opening the throttle mid-corner consumes front grip and
+        # pushes the nose wide, which is the opposite of what is wanted.
+        at_the_stop = (steer.abs() >= self.max_steer_rad * 0.99).to(steer.dtype)
+        throttle = throttle - gains["k_rotate"] * at_the_stop * yaw_short.abs()
+
+        return torch.stack(
+            [throttle.clamp(-1.0, 1.0), steer / self.max_steer_rad], dim=-1
+        )
 
     def _at(self, table: torch.Tensor, s: torch.Tensor) -> torch.Tensor:
         """Interpolate a reference table at arc length ``s``, wrapping the loop.

@@ -335,6 +335,65 @@ def test_analyse_detects_a_rollover_and_lets_it_bind():
     assert notes["tipped_at_steer"] == [0.8, 1.0]
 
 
+def test_a_wall_impact_is_not_read_as_a_rollover():
+    """The bug that made the first real probe run useless.
+
+    A car commanded to a gentle steering angle holds far less than it asked for,
+    drives a wide circle, walks out of the corridor and hits a wall at 6.7 m/s.
+    The impact flips it, so ``up_axis`` drops below 0.3 and the old code called
+    that a rollover — at whatever mild lateral acceleration it happened to be
+    pulling. The reported tipping threshold came back as 3.2 m/s^2, which would
+    have put every speed target on the track at a third of what the car can do.
+    """
+    recorder, lateral, lag = synthetic_recorder()
+    hit = 400
+    for step in range(hit, TOTAL_STEPS + 1):
+        # Gentlest steering angle only: speed collapses, then the car goes over.
+        recorder.frames["speed_forward"][step][lateral[0]] = -0.9
+        if step > hit:
+            recorder.frames["up_axis"][step][lateral[0]] = -0.5
+
+    car, notes = analyse(recorder, fake_bodies(0.26), lateral, lag, dt=DT)
+
+    assert notes["lateral_by_steer"][0]["hit_wall_at_step"] == hit
+    assert "tipped_at_step" not in notes["lateral_by_steer"][0]
+    assert not car.rollover_limited, "hitting a wall is not tipping over"
+    assert car.rollover_a_lat_m_s2 is None
+
+
+def test_braking_is_measured_up_to_the_point_the_car_flips():
+    """Standing on the brakes from top speed pitches this chassis over its nose.
+
+    Averaging the deceleration through the somersault that follows is not a
+    braking limit — the car is no longer braking, it is tumbling.
+    """
+    recorder, lateral, lag = synthetic_recorder(a_brake=8.0)
+    endo = 20
+    for step in range(ACCEL_STEPS + endo, TOTAL_STEPS + 1):
+        recorder.frames["up_axis"][step][1] = -0.4
+        recorder.frames["speed_forward"][step][1] = 0.0
+
+    car, notes = analyse(recorder, fake_bodies(0.26), lateral, lag, dt=DT)
+
+    assert notes["endo_under_braking_at_step"] == endo
+    assert car.a_brake_m_s2 == pytest.approx(8.0, rel=0.15)
+
+
+def test_steering_lag_ignores_a_slow_later_creep():
+    """The servo settles in a few steps; the car's load then drifts for minutes.
+
+    Measured against the angle at the *end* of the run rather than the plateau it
+    settles to, the same trace reported 195 steps of lag — 6.5 seconds, which is
+    not a servo.
+    """
+    recorder, lateral, lag = synthetic_recorder()
+    for step in range(400, TOTAL_STEPS + 1):
+        recorder.frames["steer_angle"][step][lag] *= 1.15
+
+    car, _ = analyse(recorder, fake_bodies(0.26), lateral, lag, dt=DT)
+    assert car.steer_lag_steps == pytest.approx(7.0, abs=1.5)
+
+
 def test_a_car_that_never_tips_is_not_rollover_limited():
     recorder, lateral, lag = synthetic_recorder(tip_at=None)
     car, notes = analyse(recorder, fake_bodies(0.26), lateral, lag, dt=DT)

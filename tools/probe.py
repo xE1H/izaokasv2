@@ -65,7 +65,7 @@ simulation_app = app_launcher.app
 
 from lituanicax_sdk.track import Track  # noqa: E402
 from lituanicax_sdk.tracks import OFFICIAL  # noqa: E402
-from lituanicax_sdk.vehicle import TIMING  # noqa: E402
+from lituanicax_sdk.vehicle import TIMING, VEHICLE  # noqa: E402
 from tools.geometry import TrackGeometry  # noqa: E402
 from tools.harness import FixedPoses, make_env  # noqa: E402
 from tools.probe_analysis import (  # noqa: E402
@@ -105,6 +105,13 @@ def report(measured, notes: dict, widest: float) -> int:
         f"  braking                    {measured.a_brake_m_s2:.2f} m/s^2 "
         f"({notes['steps_to_stop']} steps to a stop)"
     )
+    if notes.get("endo_under_braking_at_step") is not None:
+        print(
+            "                             but the car went over its nose "
+            f"{notes['endo_under_braking_at_step']} steps into full braking,\n"
+            "                             so that figure is what it managed "
+            "before it flipped."
+        )
     print(f"  top speed reached          {notes['top_speed_reached_m_s']:.2f} m/s")
     print(f"  lateral limit              {measured.a_lat_max_m_s2:.2f} m/s^2")
     if measured.rollover_a_lat_m_s2 is not None:
@@ -121,14 +128,29 @@ def report(measured, notes: dict, widest: float) -> int:
 
     print()
     for entry in notes["lateral_by_steer"]:
-        tipped = (
-            f", tipped at step {entry['tipped_at_step']}"
-            if "tipped_at_step" in entry
-            else ""
-        )
+        if "tipped_at_step" in entry:
+            ended = f", tipped at step {entry['tipped_at_step']}"
+        elif "hit_wall_at_step" in entry:
+            ended = f", hit a wall at step {entry['hit_wall_at_step']}"
+        else:
+            ended = ""
         print(
             f"    steer {entry['steer']:.2f} -> "
-            f"a_lat {entry['a_lat']:.2f} m/s^2{tipped}"
+            f"a_lat {entry['a_lat']:5.2f} m/s^2 at {entry['speed_m_s']:4.2f} m/s, "
+            f"wheels at {entry['steer_angle_rad']:.3f} rad "
+            f"of {entry['steer'] * VEHICLE.max_steer_rad:.3f} asked{ended}"
+        )
+
+    at_speed = notes["steer_at_speed"]
+    if at_speed["achieved_rad"] > 1e-3:
+        print(
+            f"\n    at {at_speed['speed_m_s']:.1f} m/s the wheels held "
+            f"{at_speed['achieved_rad']:.3f} rad of the "
+            f"{at_speed['commanded_rad']:.3f} commanded, so the\n"
+            f"    tightest radius at that speed is about "
+            f"{measured.wheelbase_m / math.tan(at_speed['achieved_rad']):.2f} m, "
+            f"not the {measured.r_min_m:.2f} m full lock implies. The steering is "
+            "an\n    effort-limited servo and the tyres win at speed."
         )
     if notes["a_lat_varies_with_steer"]:
         print(

@@ -24,10 +24,27 @@ from lituanicax_sdk.vehicle import TIMING, VEHICLE
 
 from .measured import Measured
 
-#: How much larger than the official track the probe's track is. 40x turns a
-#: 0.70 m corridor into 28 m and a 50 m loop into 2 km — room for a 50 m straight
-#: and for cornering circles of several metres' radius.
-PROBE_SCALE = 40.0
+#: How much larger than the official track the probe's track is. 120x turns a
+#: 0.70 m corridor into 84 m and a 50 m loop into 6 km.
+#:
+#: 40x was not enough and the failure was silent. The steering servo is
+#: effort-limited, so a car commanded to 0.15 of full lock actually holds about
+#: 0.02 rad at speed — an 11 m circle, which walks straight out of a 28 m
+#: corridor and into a wall. The impact flipped the car, ``up_axis`` went below
+#: 0.3, and the probe reported a *rollover at 3.2 m/s^2 lateral* — a number that
+#: would have put every speed target on the whole track at a third of what the
+#: car can do. :func:`impact_step` now catches this whatever the scale, but the
+#: cheapest fix is to not be near a wall in the first place: scaling the mesh
+#: costs nothing, since it is the same asset either way.
+PROBE_SCALE = 120.0
+
+#: A one-step drop in forward speed larger than this is an impact, not braking.
+#: The brakes manage about 11 m/s^2, which is 0.38 m/s in a 30 Hz step; 2 m/s is
+#: 60 m/s^2 and nothing but a wall does that.
+IMPACT_DROP_M_S = 2.0
+
+#: ``up_axis`` below this is a car that is no longer on its wheels.
+TIPPED_UP_AXIS = 0.3
 
 #: Steering commands swept for the cornering limit, as a fraction of full lock.
 STEER_LEVELS = (0.15, 0.25, 0.4, 0.6, 0.8, 1.0)
@@ -225,6 +242,39 @@ def measure_accel_curve(speed: np.ndarray, dt: float) -> list[tuple[float, float
     return samples
 
 
+def impact_step(speed: np.ndarray) -> int | None:
+    """First step at which forward speed collapses — i.e. the car hit something.
+
+    Everything the probe measures after an impact is about the wall, not the car,
+    and the most damaging way to get this wrong is a wall hit that flips the car
+    being read as a rollover: the reported tipping threshold is then whatever mild
+    cornering the car happened to be doing when it crashed.
+    """
+    if len(speed) < 2:
+        return None
+    dropped = np.diff(speed) < -IMPACT_DROP_M_S
+    return int(np.argmax(dropped)) + 1 if bool(dropped.any()) else None
+
+
+def tip_step(up_axis: np.ndarray) -> int | None:
+    """First step at which the car is no longer on its wheels."""
+    tipped = up_axis < TIPPED_UP_AXIS
+    return int(np.argmax(tipped)) if bool(tipped.any()) else None
+
+
+def sustained_before(trace: np.ndarray, event: int, *, window: int = 12) -> float:
+    """The typical value of ``trace`` shortly before ``event``.
+
+    A median over a window, not the maximum. The car hops as it starts to tip and
+    ``|v * yaw_rate|`` spikes with each landing — at 0.8 lock the peak reads
+    25.6 m/s^2 against a sustained 14. The peak of a bouncing car is not a
+    cornering limit, and using it would raise every speed target above what the
+    car holds.
+    """
+    end = max(int(event) - 4, 1)
+    return float(np.median(trace[max(end - window, 0) : end]))
+
+
 def analyse(
     recorder: Recorder,
     robot_data,
@@ -287,7 +337,14 @@ def analyse(
         }
     )
 
+    # Braking, up to the point the car stops being a car. Standing on the brakes
+    # from top speed pitches this chassis over its nose — measured, not assumed —
+    # and a deceleration averaged through a somersault is not a braking limit.
     brake = speed[ACCEL_STEPS:, 1]
+    flipped_braking = tip_step(up_axis[ACCEL_STEPS:, 1])
+    notes["endo_under_braking_at_step"] = flipped_braking
+    if flipped_braking is not None:
+        brake = brake[:flipped_braking]
     if len(brake) > 1:
         stopped = (
             int(np.argmax(brake <= 0.2))
@@ -306,28 +363,48 @@ def analyse(
     # ── 5/6. Lateral, and rollover ───────────────────────────────────────
     # Lateral acceleration in a steady turn is v * yaw_rate.
     lateral = np.abs(speed[:, columns] * yaw_rate[:, columns])
-    tipped = up_axis[:, columns] < 0.3
 
     per_angle = []
     for column, level in enumerate(STEER_LEVELS):
         trace = lateral[:, column]
-        tip = tipped[:, column]
-        if bool(tip.any()):
-            first = int(np.argmax(tip))
-            # What it was pulling just before it went over.
-            per_angle.append(
-                {
-                    "steer": level,
-                    "a_lat": float(np.max(trace[: max(first, 1)])),
-                    "tipped_at_step": first,
-                }
-            )
+        env = columns[column]
+        tip = tip_step(up_axis[:, env])
+        hit = impact_step(speed[:, env])
+
+        # A car that hit a wall tells us about the wall. If it went over *after*
+        # hitting one, the tip is the crash and not a cornering limit, so the run
+        # only counts up to the impact and contributes no rollover evidence.
+        if hit is not None and (tip is None or hit <= tip):
+            entry = {"a_lat": sustained_before(trace, hit), "hit_wall_at_step": hit}
+            window = slice(max(hit - 16, 0), max(hit - 4, 1))
+        elif tip is not None:
+            entry = {"a_lat": sustained_before(trace, tip), "tipped_at_step": tip}
+            window = slice(max(tip - 16, 0), max(tip - 4, 1))
         else:
             # Steady state: the last third, once transients have gone.
-            settled = trace[len(trace) * 2 // 3 :]
-            per_angle.append({"steer": level, "a_lat": float(np.median(settled))})
+            window = slice(len(trace) * 2 // 3, len(trace))
+            entry = {"a_lat": float(np.median(trace[window]))}
+
+        # What the wheels were *actually* at, against what was asked for. The
+        # steering is an effort-limited servo, so at speed it loses to the tyres
+        # and holds far less angle than commanded — which means the car's real
+        # minimum radius grows with speed and R_min from full lock is a
+        # low-speed figure. teacher.params keeps kappa_max_eff free for this.
+        entry["steer"] = level
+        entry["steer_angle_rad"] = float(np.median(steer_angle[window, env]))
+        entry["speed_m_s"] = float(np.median(speed[window, env]))
+        per_angle.append(entry)
 
     notes["lateral_by_steer"] = per_angle
+
+    # The steering angle the car held at its highest speed, which is the one that
+    # decides how tight a corner it can actually take on the racing line.
+    fastest = max(per_angle, key=lambda e: e["speed_m_s"])
+    notes["steer_at_speed"] = {
+        "speed_m_s": fastest["speed_m_s"],
+        "commanded_rad": fastest["steer"] * VEHICLE.max_steer_rad,
+        "achieved_rad": fastest["steer_angle_rad"],
+    }
 
     # The grip limit is what the car can *sustain*. A run that ended on its roof
     # was not sustaining anything, so its peak is the rollover threshold and not
@@ -345,14 +422,26 @@ def analyse(
     notes["a_lat_spread_m_s2"] = float(spread)
 
     # ── 7. Steering lag ──────────────────────────────────────────────────
+    # Against the plateau the step settles to within a second, not against the
+    # value at the end of the run. The servo is 90% there in about nine steps and
+    # then creeps for hundreds more as the car's speed and load drift; measured
+    # against that final creep the same trace reports a lag of 195 steps — 6.5
+    # seconds, which is not a servo.
     after = steer_angle[STEER_STEP_AT:, lag_env]
-    final = float(np.median(after[-20:])) if len(after) > 20 else float(after[-1])
+    plateau_from, plateau_to = 30, 60
+    if len(after) > plateau_to:
+        final = float(np.median(after[plateau_from:plateau_to]))
+    elif len(after):
+        final = float(after[-1])
+    else:
+        final = 0.0
     lag = (
         float(np.argmax(np.abs(after) >= 0.9 * abs(final)))
         if abs(final) > 1e-3
         else float("nan")
     )
     notes["steer_final_angle_rad"] = final
+    notes["steer_commanded_rad"] = float(VEHICLE.max_steer_rad)
 
     car = Measured(
         wheelbase_m=wheelbase,

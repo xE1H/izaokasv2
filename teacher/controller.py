@@ -55,7 +55,13 @@ import torch
 
 from lituanicax_sdk.state import CarState
 from tools.geometry import TrackGeometry
-from tools.profile import offset_path, periodic_basis, three_pass_profile
+from lituanicax_sdk.vehicle import VEHICLE
+from tools.profile import (
+    offset_path,
+    periodic_basis,
+    steering_ceiling,
+    three_pass_profile,
+)
 
 from .params import ControllerParams
 
@@ -146,7 +152,11 @@ def _speed_gradient(speed: np.ndarray, segment: np.ndarray) -> np.ndarray:
 
 
 def build_reference(
-    geometry: TrackGeometry, params: ControllerParams, *, v_max: float
+    geometry: TrackGeometry,
+    params: ControllerParams,
+    *,
+    v_max: float,
+    wheelbase_m: float = 0.224,
 ) -> Reference:
     """Turn a parameter vector into the line and speed profile it describes.
 
@@ -166,6 +176,16 @@ def build_reference(
     )
 
     _, segment, kappa = offset_path(geometry, line)
+    # What the *steering* allows, alongside what the tyres allow. Without it the
+    # profile specifies radii the wheels cannot be pointed round at the speed
+    # asked, and the controller spends half the lap saturated and running wide.
+    ceiling = steering_ceiling(
+        kappa,
+        wheelbase_m=wheelbase_m,
+        max_steer_rad=VEHICLE.max_steer_rad,
+        steer_ratio=params.steer_ratio_eff,
+        v_max=v_max,
+    )
     speed = three_pass_profile(
         segment,
         kappa,
@@ -173,6 +193,7 @@ def build_reference(
         a_accel=params.a_accel_eff,
         a_brake=params.a_brake_eff,
         v_max=v_max,
+        steer_ceiling=ceiling,
     )
     speed = np.clip(speed * scale, 0.1, v_max)
     gradient = _speed_gradient(speed, segment)

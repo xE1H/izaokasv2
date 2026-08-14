@@ -1,6 +1,6 @@
 """The controller's parameters: what CMA-ES searches over.
 
-Eighty-eight numbers in five groups:
+Eighty-nine numbers in five groups:
 
 ======================  =====  ===============================================
 group                   count  what it does
@@ -9,7 +9,7 @@ group                   count  what it does
 ``speed_scale``           30   local multiplier on the quasi-static profile
 effective limits           4   a_lat, a_accel, a_brake, kappa_max
 gains                     11   lookahead, steering blend, feedback
-dynamic terms              3   yaw-rate, sideslip, rotation-by-braking
+dynamic terms              4   yaw-rate, sideslip, braking, steering ceiling
 ======================  =====  ===============================================
 
 **The dynamic terms start at zero.** With ``k_r``, ``k_beta`` and ``k_rotate``
@@ -117,6 +117,12 @@ SCALAR_BOUNDS: dict[str, Bound] = {
     #    Yaw-rate shortfall into *braking*, once the steering is at the stop.
     #    Zero disables it, which is where the warm start starts.
     "k_rotate": Bound(0.0, 2.0),
+    #    What fraction of the commanded steering angle the profile believes the
+    #    wheels reach at top speed. Measured at 0.62; searched because the linear
+    #    model of the loss is a simplification and because a car that is willing
+    #    to slide does not need the wheels to point all the way round the corner.
+    #    At 1.0 the ceiling is inert and the profile is the one that came before.
+    "steer_ratio_eff": Bound(0.35, 1.0),
 }
 
 #: Corridor for the line, metres either side of the centerline. Matches
@@ -171,6 +177,7 @@ class ControllerParams:
     k_r: float = 0.0
     k_beta: float = 0.0
     k_rotate: float = 0.0
+    steer_ratio_eff: float = 1.0
 
     # ──────────────────────────────────────────────────────────────────────
     #  Vector conversion

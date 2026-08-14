@@ -161,7 +161,12 @@ def require_cma():
 
 def make_driver(geometry, candidates, rows, car: Measured):
     """One controller driving a whole generation."""
-    references = [build_reference(geometry, p, v_max=car.v_max_m_s) for p in candidates]
+    references = [
+        build_reference(
+            geometry, p, v_max=car.v_max_m_s, wheelbase_m=car.wheelbase_m
+        )
+        for p in candidates
+    ]
     return Controller(
         geometry,
         stack_references(references),
@@ -402,7 +407,9 @@ def measure(
     rows = torch.zeros(starts, dtype=torch.long, device=env.device)
     driver = make_driver(geometry, [params] * 1, rows, car)
     if trace:
-        reference = build_reference(geometry, params, v_max=car.v_max_m_s)
+        reference = build_reference(
+            geometry, params, v_max=car.v_max_m_s, wheelbase_m=car.wheelbase_m
+        )
         driver = Tracing(driver, geometry, reference)
     attempts = evaluate(env, driver, verbose=True)
     if trace:
@@ -513,7 +520,9 @@ def main() -> int:
     # reference.npz goes into teamcode/, because that is the only directory the
     # submission bundle carries (lituanicax_sdk/bundle.py:227) — a Phase 3 student
     # that reads it from anywhere else would fail verification.
-    reference = build_reference(geometry_on_device, best, v_max=car.v_max_m_s)
+    reference = build_reference(
+        geometry_on_device, best, v_max=car.v_max_m_s, wheelbase_m=car.wheelbase_m
+    )
     reference_path = Path(args_cli.reference)
     reference_path.parent.mkdir(parents=True, exist_ok=True)
     np.savez(

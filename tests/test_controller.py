@@ -72,7 +72,7 @@ def test_dimension_matches_the_documented_groups():
     assert DIMENSION == LINE_POINTS + SPEED_POINTS + len(
         ControllerParams.scalar_names()
     )
-    assert DIMENSION == 88
+    assert DIMENSION == 89
 
 
 def test_vector_round_trip():
@@ -121,7 +121,7 @@ def test_out_of_bounds_values_are_clipped_not_rejected():
 
 
 def test_wrong_length_vector_is_rejected():
-    with pytest.raises(ValueError, match="expected 88"):
+    with pytest.raises(ValueError, match="expected 89"):
         ControllerParams.from_vector(np.zeros(12))
 
 

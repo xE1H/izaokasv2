@@ -220,6 +220,9 @@ def build(
         # throttle and five rollovers in two metres looked like from the outside.
         a_brake_eff=_within("a_brake_eff", ROLLOVER_MARGIN * car.a_brake_m_s2),
         kappa_max_eff=_within("kappa_max_eff", 1.0 / requested),
+        # The measured servo loss, so the profile stops specifying radii the
+        # wheels cannot be pointed round at the speed it is asking for.
+        steer_ratio_eff=_within("steer_ratio_eff", car.steer_ratio_at_speed),
         # Lookahead: about two wheelbases at rest, growing with speed. Short,
         # and deliberately shorter than the dead time would justify. Setting
         # k_v to the measured 0.33 s lag gives a 1.2 m lookahead at corner

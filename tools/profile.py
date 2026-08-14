@@ -125,6 +125,42 @@ def _falloff(speed: np.ndarray, v_max: float) -> np.ndarray:
     return np.clip(1.0 - speed / max(v_max, 1e-9), FALLOFF_FLOOR, 1.0)
 
 
+def steering_ceiling(
+    kappa: np.ndarray,
+    *,
+    wheelbase_m: float,
+    max_steer_rad: float,
+    steer_ratio: float,
+    v_max: float,
+) -> np.ndarray:
+    """Fastest speed at which the car can still *steer* each curvature, m/s.
+
+    The cornering ceiling asks whether the tyres can hold the corner. This asks
+    the question that turned out to bind harder on this car: whether the wheels
+    can be pointed round it at all.
+
+    They often cannot. The steering is an effort-limited servo fighting the
+    tyres, and what it achieves falls with speed — measured at 78% of the
+    commanded angle at 2.4 m/s and 62% at 6.8. So a reference that specifies a
+    radius without specifying a speed at which that radius is reachable is
+    specifying something the car cannot do: the diagnostic found the best
+    candidate saturated for 53% of a lap, asking for R = 0.386 m while the wheels
+    could deliver 0.56 m.
+
+    Modelling the loss as linear in speed — 1.0 at rest falling to
+    ``steer_ratio`` at ``v_max`` — the achievable angle is
+    ``ratio(v) · max_steer``, the corner needs ``atan(L·κ)``, and the largest
+    speed that satisfies it falls out in closed form.
+    """
+    needed = np.arctan(wheelbase_m * np.abs(kappa)) / max(max_steer_rad, 1e-9)
+    loss = max(1.0 - float(steer_ratio), 1e-6)
+    # ratio(v) = 1 - loss·v/v_max  >=  needed
+    ceiling = v_max * (1.0 - needed) / loss
+    # A corner needing more than full lock at a standstill is not steerable at
+    # any speed; leave a crawl rather than a zero the profile cannot divide by.
+    return np.clip(ceiling, 0.1, v_max)
+
+
 def three_pass_profile(
     seg: np.ndarray,
     kappa: np.ndarray,
@@ -133,6 +169,7 @@ def three_pass_profile(
     a_accel: float,
     a_brake: float,
     v_max: float,
+    steer_ceiling: np.ndarray | None = None,
     iterations: int = 6,
     tolerance: float = 1e-4,
 ) -> np.ndarray:
@@ -147,6 +184,9 @@ def three_pass_profile(
             torque falls off linearly and so does the acceleration.
         a_brake: braking limit, m/s² (positive).
         v_max: top speed, m/s. Also sets where the acceleration falls to nothing.
+        steer_ceiling: optional ``[..., M]`` per-point speed cap from
+            :func:`steering_ceiling`. Without it the profile will happily specify
+            a radius the car cannot point its wheels round at the speed asked.
         iterations: how many times to sweep forward and back. The passes wrap
             around the loop, so one sweep is not enough — a braking zone that
             starts before the start/finish line has to propagate across it.
@@ -169,8 +209,10 @@ def three_pass_profile(
         raise ValueError(f"seg {seg.shape} and kappa {kappa.shape} must match.")
 
     count = seg.shape[-1]
-    # 1. The cornering ceiling.
+    # 1. The ceilings: what the tyres allow, and what the steering allows.
     speed = np.minimum(v_max, np.sqrt(a_lat / np.maximum(kappa, 1e-9)))
+    if steer_ceiling is not None:
+        speed = np.minimum(speed, steer_ceiling)
 
     for _ in range(iterations):
         before = speed.copy()

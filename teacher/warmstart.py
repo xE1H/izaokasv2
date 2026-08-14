@@ -98,6 +98,15 @@ def critically_damped_gains(
 #: rather than assumed for free.
 TRACKING_MARGIN_M = 0.06
 
+#: Fraction of the measured cornering limit the warm start aims at.
+#:
+#: The gap between what the car sustains (8.83 m/s^2) and what puts it on its
+#: roof (10.5) is 20%, and a controller that overshoots its target spends part
+#: of every corner above it. Three of ten cars rolled in Gate 1 aiming at the
+#: full figure. Bounded by ``SCALAR_BOUNDS['a_lat_eff']`` and free for the
+#: search to raise once it is being paid for in lap time.
+ROLLOVER_MARGIN = 0.75
+
 
 def build(
     geometry: TrackGeometry,
@@ -151,7 +160,12 @@ def build(
     params = ControllerParams(
         line=control,
         speed_scale=np.ones(SPEED_POINTS),
-        a_lat_eff=car.a_lat_effective_m_s2,
+        # Backed off from the measured limit. 8.83 m/s^2 is what the car held in
+        # a *steady* turn, and it goes over at 10.5 — a 20% band. A controller
+        # that overshoots spends part of every corner above whatever it is
+        # aiming at, and in Gate 1 that put three cars on their roofs. The
+        # search raises this the moment it is worth lap time.
+        a_lat_eff=ROLLOVER_MARGIN * car.a_lat_effective_m_s2,
         a_accel_eff=car.a_accel_m_s2,
         a_brake_eff=car.a_brake_m_s2,
         kappa_max_eff=1.0 / requested,
@@ -165,15 +179,15 @@ def build(
         L_0=2.0 * car.wheelbase_m,
         L_min=car.wheelbase_m,
         L_max=1.5,
-        # Left at 1.0 deliberately. The wheels only reach about 0.62 of the
-        # commanded angle at speed, but scaling both blend weights up by 1/0.62
-        # to compensate made Gate 1 worse, not better: the two terms already
-        # double-count the reference curvature, so the sum saturates against the
-        # 0.488 rad limit in every tight corner and the controller loses the
-        # ability to steer *more* when it needs to. Compensating for the servo is
-        # a job for one knob, and CMA-ES has both of these.
-        w_pp=1.0,
-        w_ff=1.0,
+        # Halved, so the two sum to one. Pure pursuit against a curved reference
+        # and the curvature feedforward are both, on their own, the steering
+        # angle the corner needs — at a weight of 1.0 each the sum is about
+        # twice it. Measured: the steering command sat against the 0.488 rad
+        # limit for 30% of every attempt, which is a controller that has already
+        # given up its ability to steer more where it most needs to. Scaling
+        # them *up* by 1/0.62 to compensate for the servo made it worse still.
+        w_pp=0.5,
+        w_ff=0.5,
         k_e=k_e,
         k_d=k_d,
         # Proportional speed control, sized so a 1 m/s error asks for most of the

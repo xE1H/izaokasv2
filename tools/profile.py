@@ -396,100 +396,117 @@ def racing_line_offsets(
     ceiling = torch.tensor(v_max, dtype=torch.float64)
 
     report: dict = {"kappa_max_requested": kappa_max, "control_points": control_points}
-    # Start from the flattest line the corridor allows, not from the centerline.
-    # The centerline is the *tightest* thing in the corridor — on the official
-    # track it peaks at R = 0.366 m against a corridor that can manage 0.545 m —
-    # so a bound anywhere near what the car needs starts badly violated, and the
-    # min-time objective pulls the other way because tighter corners are a
-    # shorter path. Measured: with R_min at 0.523 m against a 0.545 m ceiling,
-    # starting from the centerline found nothing feasible at any penalty weight
-    # and fell back to the centerline itself. From the flattest line the bound
-    # holds at the start and the penalty only has to keep it.
-    start = (
-        torch.zeros(control_points, dtype=torch.float64)
-        if kappa_max is None
-        else _widest_coefficients(
-            geometry, half_width=half_width, control_points=control_points
-        )
-    )
-    coefficients = start.clone().requires_grad_(True)
     best_n: np.ndarray | None = None
     best_time = float("inf")
-
-    # A penalty continuation, then a gentle tightening of the bound itself if the
-    # penalty alone cannot close the last fraction of a percent. Escalating the
-    # weight is much cheaper in lap time than over-tightening the bound.
-    # No unpenalized stage when there is a bound: the stages share one set of
-    # coefficients, so running the free objective first would spend its whole
-    # budget pulling the feasible starting line back into the corners.
-    stages = [0.0] if kappa_max is None else [1e2, 1e3, 1e4, 1e5, 1e6]
     requested = kappa_max
 
-    for tighten in range(3):
-        for weight in stages:
-            optimizer = torch.optim.Adam([coefficients], lr=learning_rate)
-            for _ in range(iterations):
-                optimizer.zero_grad()
-                # No clamp on the offsets: the basis rows are non-negative and
-                # sum to one, so keeping the coefficients in the corridor keeps
-                # the line in it too.
-                offsets = basis @ coefficients
-                path = centerline + offsets.unsqueeze(-1) * normal
-                segment = (torch.roll(path, -1, dims=0) - path).norm(dim=-1)
-                kappa = _torch_curvature(path)
-                speed = torch.minimum(
-                    ceiling, (a_lat / kappa.abs().clamp(min=1e-6)).sqrt()
-                )
-                loss = (segment / speed).sum()
-                if weight:
-                    excess = (kappa.abs() - kappa_max).clamp(min=0.0)
-                    loss = loss + weight * (excess**2).mean()
-                loss.backward()
-                optimizer.step()
-                with torch.no_grad():
-                    coefficients.clamp_(-half_width, half_width)
+    # Two starting points, because neither wins on its own and which one wins
+    # depends on how hard the bound bites.
+    #
+    # From the **centerline**, a penalty continuation works well when the bound
+    # is loose: the unpenalized stage finds the aggressive short line and the
+    # escalating penalty pulls its apexes back out. But the centerline is the
+    # *tightest* thing in the corridor (R = 0.366 m against a corridor that can
+    # manage 0.545 m), so a bound near what the car actually needs starts badly
+    # violated and the min-time objective pulls the wrong way — tighter corners
+    # are a shorter path. At the measured R_min of 0.523 m this found nothing
+    # feasible at any weight.
+    #
+    # From the **flattest line the corridor allows**, the bound holds at step
+    # zero and the penalty only has to keep it — which is what rescues the tight
+    # case. But with a loose bound it stays out near the walls and returns a
+    # 53.6 m path, slower than the centerline.
+    #
+    # Running both costs a few seconds and the better feasible one wins.
+    flattest = _widest_coefficients(
+        geometry, half_width=half_width, control_points=control_points
+    )
+    zeros = torch.zeros(control_points, dtype=torch.float64)
+    attempts = (
+        [(zeros, [0.0])]
+        if kappa_max is None
+        # No unpenalized stage from the flattest start: the stages share one set
+        # of coefficients, so it would spend its whole budget undoing the start.
+        else [(zeros, [0.0, 1e2, 1e3, 1e4, 1e5, 1e6]), (flattest, [1e2, 1e3, 1e4])]
+    )
 
-            n = (basis @ coefficients).detach().numpy()
-            _, segments, true_kappa = offset_path(geometry, n)
-            peak = float(np.abs(true_kappa).max())
-            if requested is not None and peak > requested * 1.001:
-                continue  # still not steerable; escalate
-            elapsed = float(
-                lap_time(
-                    segments,
-                    np.minimum(
-                        v_max, np.sqrt(a_lat / np.maximum(np.abs(true_kappa), 1e-9))
-                    ),
+    for start, stages in attempts:
+        coefficients = start.clone().requires_grad_(True)
+        # A penalty continuation, then a gentle tightening of the bound itself if
+        # the penalty alone cannot close the last fraction of a percent.
+        # Escalating the weight is much cheaper in lap time than over-tightening.
+        working = kappa_max
+        found = False
+        for _tighten in range(3):
+            for weight in stages:
+                optimizer = torch.optim.Adam([coefficients], lr=learning_rate)
+                for _ in range(iterations):
+                    optimizer.zero_grad()
+                    # No clamp on the offsets: the basis rows are non-negative
+                    # and sum to one, so keeping the coefficients in the corridor
+                    # keeps the line in it too.
+                    offsets = basis @ coefficients
+                    path = centerline + offsets.unsqueeze(-1) * normal
+                    segment = (torch.roll(path, -1, dims=0) - path).norm(dim=-1)
+                    kappa = _torch_curvature(path)
+                    speed = torch.minimum(
+                        ceiling, (a_lat / kappa.abs().clamp(min=1e-6)).sqrt()
+                    )
+                    loss = (segment / speed).sum()
+                    if weight:
+                        excess = (kappa.abs() - working).clamp(min=0.0)
+                        loss = loss + weight * (excess**2).mean()
+                    loss.backward()
+                    optimizer.step()
+                    with torch.no_grad():
+                        coefficients.clamp_(-half_width, half_width)
+
+                n = (basis @ coefficients).detach().numpy()
+                _, segments, true_kappa = offset_path(geometry, n)
+                peak = float(np.abs(true_kappa).max())
+                if requested is not None and peak > requested * 1.001:
+                    continue  # still not steerable; escalate
+                found = True
+                elapsed = float(
+                    lap_time(
+                        segments,
+                        np.minimum(
+                            v_max,
+                            np.sqrt(a_lat / np.maximum(np.abs(true_kappa), 1e-9)),
+                        ),
+                    )
                 )
-            )
-            if elapsed < best_time:
-                best_time, best_n = elapsed, n
-                report.update(
-                    {
-                        "peak_kappa": peak,
-                        "peak_radius_m": 1.0 / max(peak, 1e-9),
-                        "path_length_m": float(segments.sum()),
-                        "penalty_weight": weight,
-                        "cornering_limited_lap_s": elapsed,
-                        # The basis coefficients, so a caller searching in this
-                        # same basis can take them directly. Refitting the
-                        # per-sample line onto a coarser basis afterwards loses
-                        # the apexes — 137 mm at worst on the official track,
-                        # against a 180 mm corridor.
-                        "coefficients": coefficients.detach().numpy().copy(),
-                    }
-                )
-        if best_n is not None or requested is None:
-            break
-        kappa_max = kappa_max * 0.97
-        report["tightened_to"] = kappa_max
+                if elapsed < best_time:
+                    best_time, best_n = elapsed, n
+                    report.update(
+                        {
+                            "peak_kappa": peak,
+                            "peak_radius_m": 1.0 / max(peak, 1e-9),
+                            "path_length_m": float(segments.sum()),
+                            "penalty_weight": weight,
+                            "cornering_limited_lap_s": elapsed,
+                            "started_from": (
+                                "centerline" if start is zeros else "flattest line"
+                            ),
+                            # The basis coefficients, so a caller searching in
+                            # this same basis can take them directly. Refitting
+                            # the per-sample line onto a coarser basis afterwards
+                            # loses the apexes — 137 mm at worst on the official
+                            # track, against a 180 mm corridor.
+                            "coefficients": coefficients.detach().numpy().copy(),
+                        }
+                    )
+            if found or requested is None:
+                break
+            working = working * 0.97
+            report["tightened_to"] = working
 
     if best_n is None:
         # Nothing satisfied the bound. Fall back to the flattest line the
         # corridor allows, which is the closest to satisfying it that exists —
         # not the centerline, which is the furthest.
         basis_np = periodic_basis(count, control_points)
-        best_n = basis_np @ start.numpy()
+        best_n = basis_np @ flattest.numpy()
         _, segments, true_kappa = offset_path(geometry, best_n)
         peak = float(np.abs(true_kappa).max())
         report.update(
@@ -497,7 +514,7 @@ def racing_line_offsets(
                 "peak_kappa": peak,
                 "peak_radius_m": 1.0 / max(peak, 1e-9),
                 "path_length_m": float(segments.sum()),
-                "coefficients": start.numpy().copy(),
+                "coefficients": flattest.numpy().copy(),
                 "fell_back_to_widest_line": True,
             }
         )

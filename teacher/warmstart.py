@@ -29,8 +29,8 @@ from pathlib import Path
 import numpy as np
 
 from lituanicax_sdk.track import Track
-from lituanicax_sdk.vehicle import TIMING
 from lituanicax_sdk.tracks import OFFICIAL
+from lituanicax_sdk.vehicle import TIMING
 from tools.geometry import TrackGeometry
 from tools.measured import Measured
 from tools.profile import (

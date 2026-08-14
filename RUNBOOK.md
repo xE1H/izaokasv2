@@ -317,10 +317,18 @@ it means the controller has only matched what RL already does.
 corridor that can deliver 0.545 m. That is the number the whole approach rests
 on and it has almost no slack.
 
-**The simulator is bitwise deterministic**, within a batch *and* across batch
-sizes. A candidate scored in a population of 640 reproduces exactly when re-run
-alone, so no averaging over repeats is needed and `T_teacher` carries no
-evaluation noise. States restore to 1.5 mm.
+**The simulator is bitwise deterministic only until something touches a wall.**
+`tools.determinism` reports 0.000 mm across batch sizes and it is telling the
+truth about its own manoeuvre — a steady throttle and a slow steering sweep with
+official rules off. Scored laps crash, retire and hit walls, and there the same
+candidate diverges with population size: 77.6% of a lap at 10-80 environments,
+76.7% at 320, and a completed 16.1 s lap at 960. One percent, which is nothing
+until it lands on a crash boundary.
+
+**The search runs hundreds of environments and the benchmark runs ten**, so a
+generation's score is provisional. Verify with `--score <file> --population 1`
+(the search's own path at 10 envs) or `--measure`, and treat anything else as a
+lead rather than a result.
 
 **Do not trust the probe's numbers without looking at the traces.** Its first
 run reported a rollover threshold of 3.2 m/s², a 6.5-second steering lag, and a

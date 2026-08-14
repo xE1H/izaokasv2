@@ -114,8 +114,14 @@ parser.add_argument(
 parser.add_argument(
     "--measure",
     default=None,
+    nargs="+",
     metavar="PARAMS",
-    help="Skip the search: measure this parameter file at the official window.",
+    help=(
+        "Skip the search: measure these parameter files at the official window. "
+        "Several at once share one simulator -- Isaac Sim takes about 90 seconds "
+        "to start and the driving takes ten, so measuring three files in three "
+        "processes spends four minutes to do one minute of work."
+    ),
 )
 parser.add_argument(
     "--measure-episode",
@@ -534,9 +540,8 @@ def main() -> int:
 
     # ── Measure only ──────────────────────────────────────────────────────
     if args_cli.measure:
-        params = ControllerParams.load(args_cli.measure)
-        print(f"\n[optimize] measuring {args_cli.measure} at the official window")
-        print(params.describe())
+        files = list(args_cli.measure)
+        print(f"\n[optimize] measuring {len(files)} file(s) at the official window")
         # The official window unless deliberately overridden. --measure-episode
         # exists for one reason: a candidate that scores well in the search and
         # then fails here is either a real fragility or a difference between the
@@ -557,19 +562,28 @@ def main() -> int:
         geometry_on_device = TrackGeometry.from_track(
             env.track, spacing_m=args_cli.spacing
         )
-        result = measure(env, geometry_on_device, car, params, trace=args_cli.trace)
-        print()
         print("=" * 60)
-        if result["T_teacher"] is None:
-            print(f"  NO LAP — {result['summary']}")
+        best_file, best_time, results = None, None, {}
+        for path in files:
+            params = ControllerParams.load(path)
+            # The trace only makes sense for one file; give it to the first.
+            trace = args_cli.trace if path == files[0] else None
+            result = measure(env, geometry_on_device, car, params, trace=trace)
+            results[path] = result
+            name = Path(path).name
+            if result["T_teacher"] is None:
+                print(f"  {name:<28} NO LAP — {result['summary']}")
+            else:
+                print(f"  {name:<28} {result['T_teacher']:7.3f} s   {result['summary']}")
+                if best_time is None or result["T_teacher"] < best_time:
+                    best_file, best_time = path, result["T_teacher"]
+        print("=" * 60)
+        if best_time is None:
+            print("  nothing lapped.")
         else:
-            print(f"  T_teacher   {result['T_teacher']:.3f} s")
-            print(f"  {result['summary']}")
-            print(f"  window      {result['episode_length_s']:.0f} s")
-        print("=" * 60)
-        Path("artifacts/T_teacher.json").write_text(json.dumps(result, indent=2))
-        print("[optimize] written to artifacts/T_teacher.json")
-        return 0 if result["T_teacher"] is not None else 1
+            print(f"  best: {Path(best_file).name} at {best_time:.3f} s")
+        Path("artifacts/T_teacher.json").write_text(json.dumps(results, indent=2))
+        return 0 if best_time is not None else 1
 
     # ── Search ────────────────────────────────────────────────────────────
     warm_path = Path(args_cli.warmstart)

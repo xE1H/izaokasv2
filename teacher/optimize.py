@@ -469,7 +469,7 @@ def main() -> int:
     if args_cli.score:
         params = ControllerParams.load(args_cli.score)
         env = make_env(
-            num_envs=args_cli.starts,
+            num_envs=max(args_cli.population, 1) * args_cli.starts,
             spawn=spawn,
             official_rules=True,
             episode_length_s=args_cli.episode,
@@ -478,17 +478,29 @@ def main() -> int:
         geometry_on_device = TrackGeometry.from_track(
             env.track, spacing_m=args_cli.spacing
         )
-        rows = torch.zeros(args_cli.starts, dtype=torch.long, device=env.device)
+        # The same candidate filling the whole population. If block 0's score
+        # depends on how many identical cars are beside it, the simulator is not
+        # reproducing across environment counts and every score the search has
+        # ever reported is conditional on the population it was measured in.
+        copies = max(args_cli.population, 1)
+        rows = (
+            torch.arange(copies * args_cli.starts, device=env.device)
+            // args_cli.starts
+        )
         losses, details = score_generation(
             env,
             geometry_on_device,
-            [params],
+            [params] * copies,
             rows,
             car,
             args_cli.starts,
             args_cli.min_completions,
         )
         detail = details[0]
+        spread = {round(x, 3) for x in losses}
+        print(f"\n[score] {copies} identical candidates, {len(spread)} distinct scores")
+        if len(spread) > 1:
+            print(f"[score] THEY DISAGREE: {sorted(spread)[:6]}")
         print(f"\n[score] J {losses[0]:.3f}  branch {detail['branch']}")
         print(f"[score] completions {detail['completions']}/{args_cli.starts}")
         print(f"[score] best lap    {detail['best_lap_time_s']}")

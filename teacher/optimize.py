@@ -392,8 +392,18 @@ def main() -> int:
 
 if __name__ == "__main__":
     status = main()
-    try:
-        simulation_app.close()
-    except Exception as error:  # pragma: no cover — teardown is not the result
-        print(f"[optimize] the simulator did not shut down cleanly: {error}")
-    raise SystemExit(status)
+    # Give the simulator half a minute to shut down and then leave regardless.
+    # It has wedged in teardown here for over ten minutes after a completed run,
+    # and a search that has just spent hours producing a result must not lose it
+    # to a shutdown — everything is written to disk by this point. os._exit
+    # because a process stuck in a C++ lock does not unwind or take a signal.
+    import threading  # noqa: PLC0415
+
+    closing = threading.Thread(target=simulation_app.close, daemon=True)
+    closing.start()
+    closing.join(timeout=30.0)
+    if closing.is_alive():
+        print("[optimize] the simulator will not shut down; leaving without it.")
+    sys.stdout.flush()
+    sys.stderr.flush()
+    os._exit(status)

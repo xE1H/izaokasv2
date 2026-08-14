@@ -150,11 +150,32 @@ def main() -> int:
         else:
             status = reproducibility(env, args, torch)
     finally:
-        try:
-            app.close()
-        except Exception as error:  # pragma: no cover
-            print(f"[determinism] the simulator did not shut down cleanly: {error}")
+        _leave(app)
     return status
+
+
+def _leave(app) -> None:
+    """Shut the simulator down, and do not wait forever if it will not.
+
+    ``app.close()`` wedged here for over ten minutes after a completed run,
+    which is worse than it sounds: this module is meant to be invoked three or
+    four times in a row to compare batch sizes, and the second invocation never
+    started. The measurement is finished and printed by this point, so nothing
+    is lost by leaving without it.
+
+    ``os._exit`` rather than ``sys.exit`` because a process stuck in a C++ lock
+    does not unwind, run ``atexit`` handlers, or take a signal.
+    """
+    import sys as _sys
+    import threading
+
+    closing = threading.Thread(target=app.close, daemon=True)
+    closing.start()
+    closing.join(timeout=30.0)
+    if closing.is_alive():
+        print("[determinism] the simulator will not shut down; leaving without it.")
+    _sys.stdout.flush()
+    _sys.stderr.flush()
 
 
 def reproducibility(env, args, torch) -> int:
@@ -255,4 +276,4 @@ def restorability(env, args, torch) -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    os._exit(main())

@@ -29,6 +29,7 @@ from pathlib import Path
 import numpy as np
 
 from lituanicax_sdk.track import Track
+from lituanicax_sdk.vehicle import TIMING
 from lituanicax_sdk.tracks import OFFICIAL
 from tools.geometry import TrackGeometry
 from tools.measured import Measured
@@ -125,8 +126,13 @@ def build(
         line_report.get("coefficients", np.zeros(LINE_POINTS)), -half_width, half_width
     )
 
-    k_e, k_d = critically_damped_gains(car.wheelbase_m)
-    steer_gain = max(float(car.steer_ratio_at_speed), 0.1)
+    steer_lag_s = float(car.steer_lag_steps) * TIMING.step_dt
+    # The cross-track loop cannot be faster than the actuator it drives. A 4 rad/s
+    # design against a 0.33 s dead time is 76 degrees of phase lag at crossover,
+    # which is not a stability margin, it is an oscillator. Keep the loop slow
+    # enough that the lag costs about 0.3 rad of phase.
+    frequency = min(DESIGN_FREQUENCY_RAD_S, 0.3 / max(steer_lag_s, 1e-3))
+    k_e, k_d = critically_damped_gains(car.wheelbase_m, frequency=frequency)
     params = ControllerParams(
         line=control,
         speed_scale=np.ones(SPEED_POINTS),
@@ -134,19 +140,31 @@ def build(
         a_accel_eff=car.a_accel_m_s2,
         a_brake_eff=car.a_brake_m_s2,
         kappa_max_eff=1.0 / requested,
-        # Lookahead: about two wheelbases at rest, growing with speed. Enough that
-        # pure pursuit is stable, short enough that it does not cut the apex off.
-        k_v=0.15,
+        # Lookahead, in seconds of travel plus a floor. The seconds are the
+        # measured steering dead time: the wheels take about ten control steps to
+        # reach a commanded angle, so by the time they get there the car has
+        # moved on, and aiming at where it is now is aiming at the past. Gate 1
+        # failed with k_v = 0.15 -- half the lag -- and the trace shows exactly
+        # that failure: the steering command swinging full-scale between
+        # consecutive steps while the wheels chase it, saturated 28% of the time,
+        # and the line missed by up to 285 mm in a 200 mm corridor.
+        k_v=min(steer_lag_s, SCALAR_BOUNDS["k_v"].high),
         L_0=2.0 * car.wheelbase_m,
         L_min=car.wheelbase_m,
-        L_max=1.5,
-        # Divided by what the wheels actually reach. The steering is an
-        # effort-limited servo and at racing speed it holds about 0.62 of the
-        # commanded angle, so a controller asking for the kinematic angle
-        # understeers by that factor at every corner on the track. Gains of 1.0
-        # are only right for a car whose wheels go where they are told.
-        w_pp=min(1.0 / steer_gain, SCALAR_BOUNDS["w_pp"].high),
-        w_ff=min(1.0 / steer_gain, SCALAR_BOUNDS["w_ff"].high),
+        # Room for the lag at top speed: 6.9 m/s x 0.33 s is 2.3 m on its own.
+        L_max=min(
+            steer_lag_s * car.v_max_m_s + 2.0 * car.wheelbase_m,
+            SCALAR_BOUNDS["L_max"].high,
+        ),
+        # Left at 1.0 deliberately. The wheels only reach about 0.62 of the
+        # commanded angle at speed, but scaling both blend weights up by 1/0.62
+        # to compensate made Gate 1 worse, not better: the two terms already
+        # double-count the reference curvature, so the sum saturates against the
+        # 0.488 rad limit in every tight corner and the controller loses the
+        # ability to steer *more* when it needs to. Compensating for the servo is
+        # a job for one knob, and CMA-ES has both of these.
+        w_pp=1.0,
+        w_ff=1.0,
         k_e=k_e,
         k_d=k_d,
         # Proportional speed control, sized so a 1 m/s error asks for most of the
@@ -189,6 +207,9 @@ def build(
             "fitted_line": float(profile_lap_time(geometry, fitted, **evaluation)),
         },
         "gains": {"k_e": k_e, "k_d": k_d},
+        "steer_lag_s": steer_lag_s,
+        "design_frequency_rad_s": frequency,
+        "lookahead_s": float(params.k_v),
     }
     return params, report
 
@@ -204,6 +225,10 @@ def format_report(report: dict) -> str:
         f"(kinematics alone say {report['geometric_r_min_m']:.3f} m)",
         f"  wheels reach                 "
         f"{report['steer_ratio_at_speed']:.0%} of the commanded angle at speed",
+        f"  steering dead time           {report['steer_lag_s'] * 1000:.0f} ms, so the "
+        f"cross-track loop is designed at\n                               "
+        f"{report['design_frequency_rad_s']:.1f} rad/s and looks "
+        f"{report['lookahead_s'] * 1000:.0f} ms ahead",
         "",
     ]
     if report["track_is_steerable"]:

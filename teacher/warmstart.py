@@ -40,6 +40,7 @@ from tools.profile import (
     profile_lap_time,
     racing_line_offsets,
     widest_achievable_radius,
+    widest_line_coefficients,
 )
 
 from .params import LINE_POINTS, SCALAR_BOUNDS, SPEED_POINTS, ControllerParams
@@ -164,7 +165,17 @@ def build(
     # So take whichever is flatter: the car's own minimum radius, or the best
     # the corridor can do once the tracking margin is held back. Asking for
     # more than the corridor has is how the solve ends up in its fallback.
-    reachable, _ = widest_achievable_radius(geometry, half_width=half_width)
+    # Solved in the line's own basis, and kept: it is the flattest line the
+    # reduced corridor allows, which is both the number `requested` needs and one
+    # of the two starting points the line solve uses. Computing it here and
+    # handing it over saves solving the same thing twice, which was most of the
+    # cost of building a warm start.
+    flattest = widest_line_coefficients(
+        geometry, half_width=half_width, control_points=LINE_POINTS
+    )
+    basis = periodic_basis(geometry.num_samples, LINE_POINTS)
+    _, _, flattest_kappa = offset_path(geometry, basis @ flattest.numpy())
+    reachable = 1.0 / max(float(np.abs(flattest_kappa).max()), 1e-9)
     requested = max(car.r_min_m, reachable) if steerable else widest
     # Solved in exactly the basis the search moves, so the warm start is
     # representable without loss. Refitting an 80-point solution onto 40 control
@@ -178,8 +189,8 @@ def build(
         half_width=half_width,
         kappa_max=1.0 / requested,
         control_points=LINE_POINTS,
+        flattest=flattest,
     )
-    basis = periodic_basis(geometry.num_samples, LINE_POINTS)
     control = np.clip(
         line_report.get("coefficients", np.zeros(LINE_POINTS)), -half_width, half_width
     )

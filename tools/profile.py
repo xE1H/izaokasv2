@@ -280,7 +280,7 @@ def widest_achievable_radius(
     one gradient solve rather than a binary search over
     :func:`racing_line_offsets`.
     """
-    coefficients = _widest_coefficients(
+    coefficients = widest_line_coefficients(
         geometry,
         half_width=half_width,
         control_points=control_points,
@@ -295,7 +295,7 @@ def widest_achievable_radius(
     return 1.0 / max(float(np.abs(kappa).max()), 1e-9), n
 
 
-def _widest_coefficients(
+def widest_line_coefficients(
     geometry,
     *,
     half_width: float,
@@ -305,9 +305,11 @@ def _widest_coefficients(
 ) -> torch.Tensor:
     """The basis coefficients of the flattest line the corridor allows.
 
-    Split out because it is also the only sensible starting point for the
-    min-time solve: it is the one line guaranteed to satisfy a curvature bound
-    that any line can satisfy.
+    Public because it is wanted three times over — as the answer to "how much
+    radius can this corridor buy", as one of the two starting points for the
+    min-time solve, and as the fallback when no line meets the bound — and it is
+    the most expensive solve in this module. Callers that need more than one of
+    those should compute it once and pass it along.
     """
     basis = torch.tensor(
         periodic_basis(geometry.num_samples, control_points), dtype=torch.float64
@@ -341,6 +343,7 @@ def racing_line_offsets(
     control_points: int = DEFAULT_CONTROL_POINTS,
     iterations: int = 800,
     learning_rate: float = 0.02,
+    flattest: torch.Tensor | None = None,
 ) -> tuple[np.ndarray, dict]:
     """The fastest line in the corridor that the car can actually steer.
 
@@ -354,6 +357,11 @@ def racing_line_offsets(
             unbounded, which produces a faster line the car cannot follow.
         control_points: coefficients solved for. Fewer means a smoother line.
         iterations: Adam steps per penalty stage.
+        flattest: the coefficients of the flattest line this corridor allows, if
+            the caller already has them. One of the two starting points, and by
+            far the most expensive thing here — a caller that has just run
+            :func:`widest_achievable_radius` at the same width should pass them
+            rather than pay for the solve twice.
 
     Returns:
         ``(n, report)`` — offsets ``[M]`` in metres, positive left, and a dict
@@ -418,9 +426,10 @@ def racing_line_offsets(
     # 53.6 m path, slower than the centerline.
     #
     # Running both costs a few seconds and the better feasible one wins.
-    flattest = _widest_coefficients(
-        geometry, half_width=half_width, control_points=control_points
-    )
+    if flattest is None:
+        flattest = widest_line_coefficients(
+            geometry, half_width=half_width, control_points=control_points
+        )
     zeros = torch.zeros(control_points, dtype=torch.float64)
     attempts = (
         [(zeros, [0.0])]
@@ -437,6 +446,7 @@ def racing_line_offsets(
         # Escalating the weight is much cheaper in lap time than over-tightening.
         working = kappa_max
         found = False
+        spare = 2  # penalty stages still worth running once feasible
         for _tighten in range(3):
             for weight in stages:
                 optimizer = torch.optim.Adam([coefficients], lr=learning_rate)
@@ -496,6 +506,16 @@ def racing_line_offsets(
                             "coefficients": coefficients.detach().numpy().copy(),
                         }
                     )
+
+                # One more stage after the first feasible one, then stop. The
+                # escalation exists to *reach* feasibility; past that a heavier
+                # penalty only flattens the line further, which is slower, and
+                # the best so far is already recorded. Running all five stages
+                # regardless was most of the cost of building a warm start.
+                spare -= 1 if found else 0
+                if spare <= 0:
+                    break
+
             if found or requested is None:
                 break
             working = working * 0.97

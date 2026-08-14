@@ -31,6 +31,16 @@ def official():
     return TrackGeometry.from_track(Track(OFFICIAL, device="cpu"), spacing_m=0.02)
 
 
+@pytest.fixture(scope="module")
+def guessed(official):
+    """``build`` against the built-in guesses, computed once.
+
+    It is two Adam solves and the tests below ask for the same one ten times over;
+    at module scope that is five minutes of a five-and-a-half minute suite.
+    """
+    return build(official, Measured())
+
+
 # ══════════════════════════════════════════════════════════════════════════
 #  The measured car
 # ══════════════════════════════════════════════════════════════════════════
@@ -135,8 +145,8 @@ def test_gains_scale_with_the_wheelbase():
 # ══════════════════════════════════════════════════════════════════════════
 
 
-def test_warm_start_parameters_are_in_bounds(official):
-    params, _ = build(official, Measured())
+def test_warm_start_parameters_are_in_bounds(official, guessed):
+    params, _ = guessed
     low, high = ControllerParams.bounds_vector()
     vector = params.to_vector()
     assert np.all(vector >= low - 1e-9)
@@ -144,10 +154,10 @@ def test_warm_start_parameters_are_in_bounds(official):
     assert params.line.shape == (LINE_POINTS,)
 
 
-def test_the_warm_start_line_is_representable_without_loss(official):
+def test_the_warm_start_line_is_representable_without_loss(official, guessed):
     """Regression: solving in 80 control points and refitting onto 40 lost 137 mm
     of a 180 mm corridor and could break the curvature bound with it."""
-    _, report = build(official, Measured())
+    _, report = guessed
     assert report["line_fit_error_mm"] < 1.0
     assert report["fitted_peak_radius_m"] == pytest.approx(
         report["line"]["peak_radius_m"], rel=0.02
@@ -185,7 +195,7 @@ def report_line(geometry, params):
     return periodic_basis(geometry.num_samples, LINE_POINTS) @ params.line
 
 
-def test_the_warm_start_line_is_flatter_than_the_centerline(official):
+def test_the_warm_start_line_is_flatter_than_the_centerline(official, guessed):
     """The property that matters, now that it is not the fastest line on paper.
 
     It used to be asserted that the warm start beat the centerline on quasi-static
@@ -196,7 +206,7 @@ def test_the_warm_start_line_is_flatter_than_the_centerline(official):
     the car could ever record. A flatter line the car can actually hold beats a
     quicker one it cannot.
     """
-    params, report = build(official, Measured())
+    params, report = guessed
     _, _, kappa = offset_path(official, report_line(official, params))
     line_radius = 1.0 / float(np.abs(kappa).max())
     assert line_radius > report["centerline_min_radius_m"]
@@ -224,10 +234,10 @@ def test_a_short_wheelbase_is_reported_as_steerable(official):
     assert "STEERABLE" in format_report(report)
 
 
-def test_the_steerability_verdict_uses_the_corridor_not_the_centerline(official):
+def test_the_steerability_verdict_uses_the_corridor_not_the_centerline(guessed):
     """The corridor buys radius, and ignoring that would call the track
     undrivable for a car that can manage it comfortably."""
-    _, report = build(official, Measured())
+    _, report = guessed
     assert report["widest_achievable_radius_m"] > report["centerline_min_radius_m"]
 
 

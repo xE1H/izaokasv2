@@ -93,6 +93,17 @@ parser.add_argument(
     metavar="PARAMS",
     help="Skip the search: measure this parameter file at the official window.",
 )
+parser.add_argument(
+    "--measure-episode",
+    type=float,
+    default=None,
+    help=(
+        "Attempt window for --measure, seconds. Defaults to the official 60. "
+        "Set it to the search's window to check whether a candidate that scored "
+        "well in the search is genuinely fragile or merely being measured "
+        "somewhere different."
+    ),
+)
 parser.add_argument("--allow-cpu", action="store_true")
 parser.add_argument(
     "--trace",
@@ -430,11 +441,20 @@ def main() -> int:
         params = ControllerParams.load(args_cli.measure)
         print(f"\n[optimize] measuring {args_cli.measure} at the official window")
         print(params.describe())
+        # The official window unless deliberately overridden. --measure-episode
+        # exists for one reason: a candidate that scores well in the search and
+        # then fails here is either a real fragility or a difference between the
+        # two environments, and the only way to tell is to make them the same.
+        window = (
+            args_cli.measure_episode
+            if args_cli.measure_episode is not None
+            else OFFICIAL_EPISODE_S
+        )
         env = make_env(
             num_envs=args_cli.starts,
             spawn=spawn,
             official_rules=True,
-            episode_length_s=OFFICIAL_EPISODE_S,
+            episode_length_s=window,
             allow_cpu=args_cli.allow_cpu,
         )
         # The controller's geometry must live where the cars do.

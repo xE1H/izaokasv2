@@ -67,22 +67,35 @@ class Attempt:
 def official_start_offsets(
     count: int = AGENTS, jitter_deg: float = SPAWN_JITTER_DEG, seed: int = 0
 ) -> np.ndarray:
-    """Heading offsets for a set of attempts, radians.
+    """Heading offsets for a set of attempts, radians. Evenly spaced.
 
-    Drawn from the same uniform distribution the SDK uses —
-    ``(rand - 0.5) * 2 * jitter_rad`` in
-    :meth:`~lituanicax_sdk.spawn.SpawnManager.sample` — so a run here samples the
-    same spread of starts a benchmark run does.
+    The benchmark scores exactly one situation: the world origin, facing along
+    the track, ``±5°`` of heading jitter, ten attempts, **fastest one counts**
+    (``benchmark.py:385-397``). Nothing else is ever tested, so this is the whole
+    task and it is worth aiming at precisely.
 
-    The *exact* values differ from any particular benchmark run, because the SDK
-    draws its jitter per environment inside ``sample()`` and there is no way to
-    reach in and pin it. What matters for a search is that every candidate faces
-    the **same** ten starts, which is what :class:`RepeatedStarts` guarantees and
-    what the SDK's own spawner does not.
+    The SDK draws its ten headings uniformly from that interval with
+    ``(torch.rand(n) - 0.5) * 2 * jitter_rad`` inside
+    :meth:`~lituanicax_sdk.spawn.SpawnManager.sample`. Reproducing *those exact
+    values* would need the CUDA RNG to be in the same state at the same call,
+    which depends on everything the environment did beforehand — and this harness
+    builds a different environment. Guessing at it and being wrong would be worse
+    than not trying, because the search would have specialised on ten headings
+    the benchmark never uses.
+
+    Even spacing is the better answer to the same question. Ten random draws
+    clump and leave gaps; ten evenly spaced headings span the interval including
+    both extremes, so a candidate that laps all of them laps everything between,
+    and whatever ten the benchmark happens to draw fall inside what was
+    optimized. It is also deterministic, which matters more than it sounds:
+    every candidate in every generation faces an identical set of starts, so
+    CMA-ES is comparing controllers rather than comparing luck.
     """
-    generator = np.random.default_rng(seed)
+    del seed  # kept for call compatibility; the spacing is deterministic
     jitter = math.radians(jitter_deg)
-    return (generator.random(count) - 0.5) * 2.0 * jitter
+    if count <= 1:
+        return np.zeros(count)
+    return np.linspace(-jitter, jitter, count)
 
 
 class RepeatedStarts(SpawnManager):

@@ -384,11 +384,27 @@ def test_official_start_offsets_match_the_benchmark_spread():
     assert np.abs(offsets).max() <= math.radians(5.0)
 
 
-def test_official_start_offsets_are_seeded():
-    assert np.allclose(official_start_offsets(seed=7), official_start_offsets(seed=7))
-    assert not np.allclose(
-        official_start_offsets(seed=1), official_start_offsets(seed=2)
-    )
+def test_official_start_offsets_span_the_whole_jitter_range():
+    """Ten evenly spaced headings, not ten random ones.
+
+    The benchmark tests exactly one situation and takes the fastest of ten
+    attempts, so what matters is being quick across the whole ±5° interval.
+    Random draws clump and leave gaps; even spacing hits both extremes, so a
+    candidate that laps all ten laps everything between them and whatever the
+    benchmark happens to draw falls inside what was optimized.
+    """
+    offsets = official_start_offsets()
+    limit = math.radians(5.0)
+    assert offsets.min() == pytest.approx(-limit)
+    assert offsets.max() == pytest.approx(limit)
+    gaps = np.diff(offsets)
+    assert np.allclose(gaps, gaps[0]), "evenly spaced, so coverage has no holes"
+
+
+def test_official_start_offsets_do_not_depend_on_luck():
+    """Every candidate in every generation must face an identical set of starts,
+    or CMA-ES is comparing luck rather than controllers."""
+    assert np.allclose(official_start_offsets(seed=1), official_start_offsets(seed=2))
 
 
 def test_zero_jitter_gives_identical_starts():

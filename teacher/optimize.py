@@ -70,6 +70,17 @@ parser.add_argument(
 parser.add_argument("--generations", type=int, default=100)
 parser.add_argument("--seeds", type=int, default=1, help="Independent CMA-ES runs.")
 parser.add_argument(
+    "--cma-seed",
+    type=int,
+    default=0,
+    help=(
+        "Offset for the CMA-ES random seed. The population has to stay small "
+        "for its scores to reproduce, which costs throughput; running several "
+        "of these at once on the same GPU buys it back, but only if they "
+        "explore differently."
+    ),
+)
+parser.add_argument(
     "--sigma", type=float, default=0.15, help="Initial step, normalized."
 )
 parser.add_argument(
@@ -275,7 +286,7 @@ def search(
                 {
                     "bounds": [0.0, 1.0],
                     "popsize": population,
-                    "seed": seed * 1000 + attempt + 1,
+                    "seed": (args_cli.cma_seed + seed) * 1000 + attempt + 1,
                     "verbose": -9,
                 },
             )

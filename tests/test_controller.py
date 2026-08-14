@@ -21,8 +21,8 @@ from lituanicax_sdk.vehicle import VEHICLE
 from teacher.controller import Controller, Reference, build_reference
 from teacher.params import (
     DIMENSION,
-    SCALAR_BOUNDS,
     LINE_POINTS,
+    SCALAR_BOUNDS,
     SPEED_POINTS,
     ControllerParams,
 )

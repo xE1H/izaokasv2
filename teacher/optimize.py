@@ -574,7 +574,10 @@ def main() -> int:
             if result["T_teacher"] is None:
                 print(f"  {name:<28} NO LAP — {result['summary']}")
             else:
-                print(f"  {name:<28} {result['T_teacher']:7.3f} s   {result['summary']}")
+                print(
+                    f"  {name:<28} {result['T_teacher']:7.3f} s   "
+                    f"{result['summary']}"
+                )
                 if best_time is None or result["T_teacher"] < best_time:
                     best_file, best_time = path, result["T_teacher"]
         print("=" * 60)

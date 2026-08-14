@@ -69,11 +69,15 @@ parser.add_argument(
 parser.add_argument(
     "--min-completions",
     type=int,
-    default=1,
+    default=3,
     help=(
-        "Starts a candidate must finish to be scored on time. Default 1, "
-        "matching the leaderboard, which takes the fastest of ten attempts and "
-        "does not care about the other nine."
+        "Starts a candidate must finish to be scored on time. The leaderboard "
+        "takes the fastest of ten and does not care about the other nine, so 1 "
+        "is what it rewards -- but a candidate that laps once in ten does not "
+        "reproduce: the simulator diverges across population sizes once cars "
+        "start touching walls, and the benchmark's population is ten while the "
+        "search's is hundreds. 3 is a robustness filter, not a taste for tidy "
+        "driving."
     ),
 )
 parser.add_argument("--warmstart", default="artifacts/teacher-warmstart.json")

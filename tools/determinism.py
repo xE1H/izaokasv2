@@ -14,6 +14,21 @@
 
 Neither probe blocks Phase 1, and both change how the results are read.
 
+**What this probe found, and what it missed.** It reported *bitwise* identical
+trajectories across batch sizes, which is true of what it measures and not true
+of what matters. The manoeuvre here is a steady throttle and a slow steering
+sweep with official rules off: the car never touches a wall, never crashes,
+never retires. Scored laps do all three, and there the simulator **does** diverge
+with population size — the same candidate reaching 77.6% of the lap at 10 to 80
+environments and 76.7% at 320, which sounds like nothing until a crash boundary
+turns a 1% difference into the difference between a lap and no lap.
+
+The practical consequence is in ``teacher.optimize``: a candidate that laps once
+in ten inside a population of hundreds may lap zero times in the ten the
+benchmark runs, so the search filters for candidates that lap several times
+rather than trusting a single one. If this probe is ever extended, extend it
+into contact — that is where the reproducibility actually breaks.
+
 **Why cross-batch determinism has teeth.** CMA-ES scores a candidate inside a
 population of hundreds and then the winner is re-measured on its own. If GPU PhysX
 does not reproduce across batch sizes — and it often does not, because the solver's

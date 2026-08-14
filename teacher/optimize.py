@@ -53,7 +53,16 @@ from isaaclab.app import AppLauncher  # noqa: E402
 
 parser = argparse.ArgumentParser(description="Optimize the teacher with CMA-ES.")
 parser.add_argument(
-    "--population", type=int, default=64, help="Candidates per generation."
+    "--population",
+    type=int,
+    default=12,
+    help=(
+        "Candidates per generation. Twelve, not because CMA-ES wants a small "
+        "population but because the simulator stops reproducing above it: the "
+        "same candidate scores identically at 10 to 120 environments and "
+        "differently at 160 and above, and the benchmark runs 10. A bigger "
+        "population buys candidates whose scores do not survive being measured."
+    ),
 )
 parser.add_argument(
     "--starts", type=int, default=10, help="Start jitters per candidate."
@@ -69,15 +78,15 @@ parser.add_argument(
 parser.add_argument(
     "--min-completions",
     type=int,
-    default=3,
+    default=1,
     help=(
-        "Starts a candidate must finish to be scored on time. The leaderboard "
-        "takes the fastest of ten and does not care about the other nine, so 1 "
-        "is what it rewards -- but a candidate that laps once in ten does not "
-        "reproduce: the simulator diverges across population sizes once cars "
-        "start touching walls, and the benchmark's population is ten while the "
-        "search's is hundreds. 3 is a robustness filter, not a taste for tidy "
-        "driving."
+        "Starts a candidate must finish to be scored on time. One, matching the "
+        "leaderboard, which takes the fastest of ten attempts and does not care "
+        "about the other nine. This was briefly raised to filter out candidates "
+        "whose single lap did not reproduce, but that was treating the symptom: "
+        "the scores were being taken at 960 environments where the benchmark "
+        "uses 10. Keeping the population inside the reproducing range fixes it "
+        "at the source and lets the objective match the competition again."
     ),
 )
 parser.add_argument("--warmstart", default="artifacts/teacher-warmstart.json")

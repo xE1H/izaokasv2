@@ -90,6 +90,12 @@ parser.add_argument(
     help="Skip the search: measure this parameter file at the official window.",
 )
 parser.add_argument("--allow-cpu", action="store_true")
+parser.add_argument(
+    "--trace",
+    default=None,
+    metavar="PATH",
+    help="With --measure: record the control law's inputs and outputs per step.",
+)
 AppLauncher.add_app_launcher_args(parser)
 args_cli, _ = parser.parse_known_args()
 sys.argv = [sys.argv[0]]
@@ -283,12 +289,78 @@ def search(
 # ═══════════════════════════════════════════════════════════════════════════
 
 
-def measure(env, geometry, car: Measured, params: ControllerParams) -> dict:
+class Tracing:
+    """Wraps a driver and records what it saw and what it did, every step.
+
+    Gate 1 is a yes/no — the car either completed a lap or it did not — and when
+    it says no there is nothing in the answer to act on. This records the inputs
+    to the control law alongside its outputs, so the difference between "the
+    speed profile asked for more than the car can do" and "the steering is
+    tracking the wrong line" is one plot rather than a guess.
+    """
+
+    def __init__(self, driver, geometry, reference):
+        self.driver = driver
+        self.geometry = geometry
+        self.reference = reference
+        self.frames: list[dict] = []
+
+    def __call__(self, car):
+        actions = self.driver(car)
+        s, offset = self.geometry.project(car.pos_xy)
+        self.frames.append(
+            {
+                "s": s.detach().cpu().numpy().copy(),
+                "n": offset.detach().cpu().numpy().copy(),
+                "speed": car.speed_forward.detach().cpu().numpy().copy(),
+                "throttle": actions[:, 0].detach().cpu().numpy().copy(),
+                "steer_cmd": actions[:, 1].detach().cpu().numpy().copy(),
+                "steer_angle": car.steer_angle.detach().cpu().numpy().copy(),
+                "up_axis": car.up_axis.detach().cpu().numpy().copy(),
+                "pos": car.pos_xy.detach().cpu().numpy().copy(),
+                "ref_n": self.geometry.interp(s, self.reference.offset)
+                .detach()
+                .cpu()
+                .numpy()
+                .copy(),
+                "ref_speed": self.geometry.interp(s, self.reference.speed)
+                .detach()
+                .cpu()
+                .numpy()
+                .copy(),
+                "ref_kappa": self.geometry.interp(s, self.reference.kappa)
+                .detach()
+                .cpu()
+                .numpy()
+                .copy(),
+            }
+        )
+        return actions
+
+    def save(self, path) -> None:
+        keys = self.frames[0].keys()
+        np.savez(
+            path,
+            **{k: np.stack([f[k] for f in self.frames]) for k in keys},
+            track_length_m=np.array(self.geometry.length),
+        )
+
+
+def measure(
+    env, geometry, car: Measured, params: ControllerParams, trace: str | None = None
+) -> dict:
     """Score one candidate at the window a real attempt gets."""
     starts = env.num_envs
     rows = torch.zeros(starts, dtype=torch.long, device=env.device)
     driver = make_driver(geometry, [params] * 1, rows, car)
+    if trace:
+        reference = build_reference(geometry, params, v_max=car.v_max_m_s)
+        driver = Tracing(driver, geometry, reference)
     attempts = evaluate(env, driver, verbose=True)
+    if trace:
+        Path(trace).parent.mkdir(parents=True, exist_ok=True)
+        driver.save(trace)
+        print(f"[optimize] controller trace -> {trace}")
 
     valid = sorted(a.lap_time_s for a in attempts if a.valid)
     return {
@@ -337,7 +409,7 @@ def main() -> int:
         geometry_on_device = TrackGeometry.from_track(
             env.track, spacing_m=args_cli.spacing
         )
-        result = measure(env, geometry_on_device, car, params)
+        result = measure(env, geometry_on_device, car, params, trace=args_cli.trace)
         print()
         print("=" * 60)
         if result["T_teacher"] is None:

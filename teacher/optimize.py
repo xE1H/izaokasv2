@@ -202,8 +202,13 @@ def checkpoint(params: ControllerParams, report: dict) -> None:
     improves, which is rare enough to cost nothing and often enough that the most
     that can be lost is the generations since the last improvement.
     """
-    params.save(args_cli.out)
-    Path("artifacts/optimize-history.json").write_text(json.dumps(report, indent=2))
+    path = Path(args_cli.out)
+    params.save(path)
+    # Beside the parameters, not at a fixed path. A second invocation with its
+    # own --out used to overwrite the first one's history while leaving its
+    # parameters alone, so the two files described different runs and the
+    # reported best belonged to whichever had finished last.
+    path.with_suffix(".history.json").write_text(json.dumps(report, indent=2))
 
 
 def search(

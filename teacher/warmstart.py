@@ -93,10 +93,16 @@ def critically_damped_gains(
 #: assumes perfect tracking is not a line the car can drive, and the fastest one
 #: on paper is the one that assumes it hardest.
 #:
+#: Sized from the measurement, not guessed: with the control law behaving, the
+#: tracking error is 19 mm at the median and 113 mm at its worst, so a line held
+#: to 80 mm of the 201 mm available survives its own worst moment with 8 mm to
+#: spare. At 60 mm of margin it did not, and the cars crashed where their error
+#: peaked.
+#:
 #: The search is not bound by this — ``LINE_BOUND`` still spans the full ±0.18 —
 #: so CMA-ES can spend the margin later, once it is being paid for in lap time
 #: rather than assumed for free.
-TRACKING_MARGIN_M = 0.06
+TRACKING_MARGIN_M = 0.10
 
 #: Fraction of the measured cornering limit the warm start aims at.
 #:
@@ -130,21 +136,22 @@ def build(
     # Ask for the tightest radius the car can hold. If that is beyond what the
     # corridor can deliver, ask for the best the corridor has and record that the
     # track needs more than kinematic steering.
-    # The *kinematic* minimum radius, not the measured circle, and deliberately.
+    # Never tighter than the reduced corridor can actually deliver.
     #
-    # The measured 0.523 m circle was driven at 1.25 m/s under power and includes
-    # the slip that comes with that; the kinematics alone say 0.422 m. Binding
-    # the line to 0.523 m leaves the corridor nothing: the widest it can deliver
-    # is 0.545 m, so the line is pinned to the walls, and once 60 mm is held back
-    # for tracking error no line satisfies the bound at all. Gate 1 measured the
-    # consequence — the car tracked the line to 19 mm and still hit the wall,
-    # because the line was already against it.
+    # Asking for the kinematic 0.422 m instead of the measured 0.523 m gave a
+    # tighter, shorter line — 48.1 m against 52.1 m — and the car could not
+    # drive it: median tracking error went from 19 mm to 111 mm and five of ten
+    # cars ended up on their roofs inside the first two metres. Flatter lines
+    # track better, and this car is power-limited rather than grip-limited — it
+    # spends 93% of an attempt at full throttle and never reaches the speeds the
+    # profile asks for — so a shorter path buys almost nothing while a tighter
+    # one costs control.
     #
-    # Which figure is right depends on speed and slip, and the honest answer is
-    # that it sits between the two. kappa_max_eff is a search parameter for
-    # exactly this reason, so the warm start takes the end that leaves room to
-    # drive and lets CMA-ES tighten it if the lap time is there.
-    requested = car.geometric_r_min_m if steerable else widest
+    # So take whichever is flatter: the car's own minimum radius, or the best
+    # the corridor can do once the tracking margin is held back. Asking for
+    # more than the corridor has is how the solve ends up in its fallback.
+    reachable, _ = widest_achievable_radius(geometry, half_width=half_width)
+    requested = max(car.r_min_m, reachable) if steerable else widest
     # Solved in exactly the basis the search moves, so the warm start is
     # representable without loss. Refitting an 80-point solution onto 40 control
     # points afterwards smooths the apexes off — 137 mm of error at worst against
@@ -181,7 +188,12 @@ def build(
         # search raises this the moment it is worth lap time.
         a_lat_eff=ROLLOVER_MARGIN * car.a_lat_effective_m_s2,
         a_accel_eff=car.a_accel_m_s2,
-        a_brake_eff=car.a_brake_m_s2,
+        # Backed off for the same reason, and the probe was explicit about this
+        # one: 8.26 m/s^2 is what the car managed in the ten steps before it went
+        # over its nose. A speed profile whose backward pass plans on braking the
+        # car cannot do arrives at every corner too fast, which is what 93% full
+        # throttle and five rollovers in two metres looked like from the outside.
+        a_brake_eff=ROLLOVER_MARGIN * car.a_brake_m_s2,
         kappa_max_eff=1.0 / requested,
         # Lookahead: about two wheelbases at rest, growing with speed. Short,
         # and deliberately shorter than the dead time would justify. Setting

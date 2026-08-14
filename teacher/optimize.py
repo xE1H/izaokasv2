@@ -172,6 +172,19 @@ def score_generation(env, geometry, candidates, rows, car, starts, min_completio
 # ═══════════════════════════════════════════════════════════════════════════
 
 
+def checkpoint(params: ControllerParams, report: dict) -> None:
+    """Write the incumbent to disk, now, before the next generation.
+
+    A hundred generations is hours of GPU time, and until this existed the only
+    write was after the last one — so a crash, a preemption, or a decision to
+    stop early at generation 80 threw all of it away. Written every time the best
+    improves, which is rare enough to cost nothing and often enough that the most
+    that can be lost is the generations since the last improvement.
+    """
+    params.save(args_cli.out)
+    Path("artifacts/optimize-history.json").write_text(json.dumps(report, indent=2))
+
+
 def search(
     env, geometry, car: Measured, warm: ControllerParams
 ) -> tuple[ControllerParams, dict]:
@@ -215,9 +228,10 @@ def search(
             laps = sum(1 for d in details if d["branch"] == "lap")
             elapsed = time.time() - started
 
-            if loss < best_loss:
+            improved = loss < best_loss
+            if improved:
                 best_loss, best_params = loss, candidates[order]
-                marker = "  <- best so far"
+                marker = "  <- best so far, saved"
             else:
                 marker = ""
             if loss < seed_best:
@@ -248,6 +262,9 @@ def search(
                     },
                 }
             )
+
+            if improved:
+                checkpoint(best_params, {"best_loss": best_loss, "history": history})
 
             if stale >= args_cli.restart_after:
                 # Not IPOP: the environment fixes the population size, so this

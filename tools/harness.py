@@ -72,11 +72,27 @@ class HarnessEnv(RaceEnv):
     position.
     """
 
-    #: The most recent snapshot. Set during ``reset()`` and on every ``step()``.
-    latest_car: CarState
+    _latest_car: CarState | None = None
+
+    @property
+    def latest_car(self) -> CarState:
+        """The most recent snapshot. Set by ``reset()`` and by every ``step()``.
+
+        A property rather than a plain attribute so that reading it before the
+        first reset says what is wrong. On a GPU box the alternative is a bare
+        ``AttributeError`` several minutes into a run that has already paid for
+        Isaac Sim to start.
+        """
+        if self._latest_car is None:
+            raise RuntimeError(
+                "no car state yet — call env.reset() before driving. The state is "
+                "published from compute_observations(), which the SDK only calls "
+                "once the environment has been reset at least once."
+            )
+        return self._latest_car
 
     def compute_observations(self, car: CarState) -> torch.Tensor:
-        self.latest_car = car
+        self._latest_car = car
         return torch.zeros(self.num_envs, OBSERVATION_SPACE, device=self.device)
 
     def compute_reward(self, car: CarState) -> torch.Tensor:
@@ -193,37 +209,3 @@ def make_env(
         )
 
     return HarnessEnv(cfg)
-
-
-def drive(
-    env: HarnessEnv,
-    driver,
-    *,
-    steps: int | None = None,
-    on_step=None,
-) -> int:
-    """Reset, then drive to the end of the episode.
-
-    Args:
-        env: a harness environment.
-        driver: called with the current ``CarState``, returns ``[N, 2]`` actions.
-        steps: how many policy steps. Defaults to one full episode.
-        on_step: optional ``(step, car, actions, dones) -> bool``. Return True to
-            stop early — the probes use this to detect a finished measurement, and
-            the evaluator to stop once every attempt has settled.
-
-    Returns:
-        How many steps were taken.
-    """
-    env.reset()
-    car = env.latest_car
-    limit = int(env.max_episode_length) if steps is None else int(steps)
-
-    for step in range(limit):
-        actions = driver(car)
-        _, _, terminated, truncated, _ = env.step(actions)
-        dones = terminated | truncated
-        car = env.latest_car
-        if on_step is not None and on_step(step, car, actions, dones):
-            return step + 1
-    return limit

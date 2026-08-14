@@ -60,6 +60,18 @@ def report(trace: dict, *, wheelbase_m: float) -> dict:
     alive = up > UPRIGHT
     saturated = np.abs(steer) > SATURATED
     limit = VEHICLE.max_steer_rad
+
+    if not alive.any():
+        # Every mean below would be nan, and `nan > threshold` is False, so the
+        # verdict would come back ACCELERATION-LIMITED from no data at all —
+        # confidently, and in the direction that sends the next phase after the
+        # wrong mechanism.
+        print(
+            "  NO VERDICT: every car was on its roof for the whole trace, so there\n"
+            "  is nothing here about the control law. Fix the crash first."
+        )
+        return {"saturated": 0.0, "bands": [], "upright_steps": 0}
+
     share = float(saturated[alive].mean())
 
     print(f"{int(alive.sum())} upright steps, {share:.1%} with the steering saturated")

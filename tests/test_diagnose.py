@@ -58,12 +58,22 @@ def test_the_radius_reported_is_the_one_the_wheels_can_hold():
     assert summary["wheels_at_full_lock_rad"] / VEHICLE.max_steer_rad < 0.6
 
 
-def test_tipped_cars_do_not_count():
-    """Everything a car does after going over is about the crash, not the law."""
+def test_tipped_cars_do_not_count(capsys):
+    """Everything a car does after going over is about the crash, not the law.
+
+    With *every* car tipped there is no data, and the means come back nan. Since
+    ``nan > threshold`` is False, the verdict used to print
+    ACCELERATION-LIMITED — confidently, from nothing, and in the direction that
+    sends the next phase after the wrong mechanism.
+    """
     upright = report(trace(steer=1.0, wheels=0.25), wheelbase_m=WHEELBASE)
-    rolled = report(trace(steer=1.0, wheels=0.25, up=-0.5), wheelbase_m=WHEELBASE)
     assert upright["saturated"] == pytest.approx(1.0)
-    assert rolled["saturated"] == 0.0, "a tipped car contributes nothing"
+
+    rolled = report(trace(steer=1.0, wheels=0.25, up=-0.5), wheelbase_m=WHEELBASE)
+    assert rolled["upright_steps"] == 0
+    printed = capsys.readouterr().out
+    assert "NO VERDICT" in printed
+    assert "ACCELERATION-LIMITED" not in printed
 
 
 def test_nothing_left_needs_both_axes_pinned():

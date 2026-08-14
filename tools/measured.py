@@ -60,18 +60,40 @@ class Measured:
     steer_lag_steps: float = 2.0
     v_max_m_s: float = 6.7
     accel_curve: list[tuple[float, float]] = field(default_factory=list)
+    full_lock_radius_m: float | None = None
+    steer_ratio_at_speed: float = 1.0
     measured: bool = False
 
     # ──────────────────────────────────────────────────────────────────────
 
     @property
     def r_min_m(self) -> float:
-        """Geometric minimum turn radius, ``L_wb / tan(max_steer)``.
+        """Minimum turn radius: the circle the car actually drove, if it drove one.
 
         The number that decides whether the tightest corner is drivable by
         steering alone. Compare against
         :func:`tools.profile.widest_achievable_radius`.
+
+        The geometric ``L_wb / tan(max_steer)`` is the fallback, not the answer,
+        because it assumes the wheels reach the commanded angle. They do not: the
+        steering is an effort-limited servo and at full lock the measured car held
+        0.447 rad of the 0.488 it was asked for. The difference is not academic —
+        the geometric figure says 0.422 m against a corridor that can deliver
+        0.545 m, comfortable; the circle the car actually drove is 0.523 m, which
+        passes by four percent.
         """
+        if self.full_lock_radius_m is not None:
+            return self.full_lock_radius_m
+
+        import math
+
+        from lituanicax_sdk.vehicle import VEHICLE
+
+        return self.wheelbase_m / math.tan(VEHICLE.max_steer_rad)
+
+    @property
+    def geometric_r_min_m(self) -> float:
+        """``L_wb / tan(max_steer)`` — what the kinematics alone would give."""
         import math
 
         from lituanicax_sdk.vehicle import VEHICLE

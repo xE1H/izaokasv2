@@ -41,7 +41,12 @@ from tools.profile import (
     widest_achievable_radius,
 )
 
-from .params import LINE_POINTS, SPEED_POINTS, ControllerParams
+from .params import (
+    LINE_POINTS,
+    SCALAR_BOUNDS,
+    SPEED_POINTS,
+    ControllerParams,
+)
 
 DEFAULT_PATH = Path("artifacts/teacher-warmstart.json")
 
@@ -121,6 +126,7 @@ def build(
     )
 
     k_e, k_d = critically_damped_gains(car.wheelbase_m)
+    steer_gain = max(float(car.steer_ratio_at_speed), 0.1)
     params = ControllerParams(
         line=control,
         speed_scale=np.ones(SPEED_POINTS),
@@ -134,8 +140,13 @@ def build(
         L_0=2.0 * car.wheelbase_m,
         L_min=car.wheelbase_m,
         L_max=1.5,
-        w_pp=1.0,
-        w_ff=1.0,
+        # Divided by what the wheels actually reach. The steering is an
+        # effort-limited servo and at racing speed it holds about 0.62 of the
+        # commanded angle, so a controller asking for the kinematic angle
+        # understeers by that factor at every corner on the track. Gains of 1.0
+        # are only right for a car whose wheels go where they are told.
+        w_pp=min(1.0 / steer_gain, SCALAR_BOUNDS["w_pp"].high),
+        w_ff=min(1.0 / steer_gain, SCALAR_BOUNDS["w_ff"].high),
         k_e=k_e,
         k_d=k_d,
         # Proportional speed control, sized so a 1 m/s error asks for most of the
@@ -156,6 +167,8 @@ def build(
         "car": car.describe(),
         "car_measured": car.measured,
         "r_min_m": car.r_min_m,
+        "geometric_r_min_m": car.geometric_r_min_m,
+        "steer_ratio_at_speed": float(car.steer_ratio_at_speed),
         "centerline_min_radius_m": centerline_radius,
         "widest_achievable_radius_m": widest,
         "track_is_steerable": bool(steerable),
@@ -187,7 +200,10 @@ def format_report(report: dict) -> str:
         "",
         f"  centerline tightest radius   {report['centerline_min_radius_m']:.3f} m",
         f"  widest the corridor allows   {report['widest_achievable_radius_m']:.3f} m",
-        f"  car's minimum turn radius    {report['r_min_m']:.3f} m",
+        f"  car's minimum turn radius    {report['r_min_m']:.3f} m "
+        f"(kinematics alone say {report['geometric_r_min_m']:.3f} m)",
+        f"  wheels reach                 "
+        f"{report['steer_ratio_at_speed']:.0%} of the commanded angle at speed",
         "",
     ]
     if report["track_is_steerable"]:

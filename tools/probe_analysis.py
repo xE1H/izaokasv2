@@ -443,6 +443,27 @@ def analyse(
     notes["steer_final_angle_rad"] = final
     notes["steer_commanded_rad"] = float(VEHICLE.max_steer_rad)
 
+    # How much of the commanded angle the wheels actually reach once the car is
+    # moving. Measured at 0.62 across every steering level at 6.8 m/s, rising to
+    # 0.83 at 2.7 m/s: the servo is losing to the tyres. A controller that
+    # commands the kinematic angle understeers by that factor everywhere, so the
+    # warm start divides its steering gains by this rather than making the search
+    # spend generations rediscovering it.
+    moving = [e for e in per_angle if e["speed_m_s"] > 1.0 and e["steer"] > 0]
+    ratio = (
+        float(
+            np.median(
+                [
+                    e["steer_angle_rad"] / (e["steer"] * VEHICLE.max_steer_rad)
+                    for e in moving
+                ]
+            )
+        )
+        if moving
+        else 1.0
+    )
+    notes["steer_ratio_at_speed"] = ratio
+
     car = Measured(
         wheelbase_m=wheelbase,
         a_accel_m_s2=a_accel,
@@ -451,6 +472,14 @@ def analyse(
         rollover_a_lat_m_s2=rollover,
         steer_lag_steps=lag,
         v_max_m_s=float(max(float(run.max()), VEHICLE.motor_no_load_speed_m_s * 0.5)),
+        # The circle the car drove at full lock, which is the minimum radius it
+        # actually has. Only trusted when the fit is a circle: a car that was not
+        # turning fits an enormous one, and that would silently claim the track is
+        # steerable when nothing had been measured.
+        full_lock_radius_m=(
+            radius if rms < 0.02 * max(radius, 1e-6) and radius < 100.0 else None
+        ),
+        steer_ratio_at_speed=ratio,
         accel_curve=curve,
         measured=True,
     )

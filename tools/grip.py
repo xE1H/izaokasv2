@@ -226,15 +226,31 @@ def _update_dynamics(summary: dict, path: Path) -> None:
         print(f"[grip] no {path} to update.")
         return
 
-    held = [row["held_a_lat"] for row in summary["levels"]]
+    survived = [
+        row["held_a_lat"] for row in summary["levels"] if row["ended"] == "survived"
+    ]
+    proven = max(survived) if survived else 0.0
+    # A run that ended on its roof while holding *less* than a level the car
+    # demonstrably sustained is not telling us about a cornering limit — it hit
+    # something, or bounced. Measured: 0.5 lock tipped at a held 6.33 m/s^2 while
+    # 0.65 lock sat at 9.62 all day. Taking the minimum over every tipped run let
+    # that one anomaly drag the whole limit below what the car had just proven,
+    # which is exactly backwards.
     tipped = [
-        row["held_a_lat"] for row in summary["levels"] if row["ended"] == "tipped"
+        row["held_a_lat"]
+        for row in summary["levels"]
+        if row["ended"] == "tipped" and row["held_a_lat"] > proven
     ]
     data = json.loads(path.read_text())
     was = data.get("a_lat_max_m_s2")
-    data["a_lat_max_m_s2"] = max(held)
-    if tipped:
-        data["rollover_a_lat_m_s2"] = min(tipped)
+    # Staying true to what the field says it is: the highest the car sustained
+    # *without* tipping. The 12.5 m/s^2 that 0.8 lock held for a second is real
+    # and a corner on this track lasts about that long, but it did eventually go
+    # over, so it belongs in the rollover figure and not this one. The search is
+    # free to raise a_lat_eff to 20 if the simulator says the car gets away with
+    # it, which is a better arbiter than a definition.
+    data["a_lat_max_m_s2"] = proven
+    data["rollover_a_lat_m_s2"] = min(tipped) if tipped else None
     data["a_lat_effective_m_s2"] = min(
         data["a_lat_max_m_s2"], data.get("rollover_a_lat_m_s2") or float("inf")
     )

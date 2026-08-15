@@ -459,6 +459,8 @@ def racing_line_offsets(
     iterations: int = 800,
     learning_rate: float = 0.02,
     flattest: torch.Tensor | None = None,
+    steer_rate_limit: float | None = None,
+    wheelbase_m: float = 0.224,
 ) -> tuple[np.ndarray, dict]:
     """The fastest line in the corridor that the car can actually steer.
 
@@ -472,6 +474,13 @@ def racing_line_offsets(
             unbounded, which produces a faster line the car cannot follow.
         control_points: coefficients solved for. Fewer means a smoother line.
         iterations: Adam steps per penalty stage.
+        steer_rate_limit: how fast the wheels can actually be moved, rad/s. The
+            curvature bound says the wheels can *reach* the angle a corner needs;
+            this says they can get there before the corner does. Measured lines
+            that ignore it demand more than the servo can deliver for about a
+            fifth of the lap, and the car spends that fraction behind its own
+            reference.
+        wheelbase_m: for turning curvature into a wheel angle.
         flattest: the coefficients of the flattest line this corridor allows, if
             the caller already has them. One of the two starting points, and by
             far the most expensive thing here — a caller that has just run
@@ -581,6 +590,20 @@ def racing_line_offsets(
                     if weight:
                         excess = (kappa.abs() - working).clamp(min=0.0)
                         loss = loss + weight * (excess**2).mean()
+                        if steer_rate_limit is not None:
+                            # The angle bound says the wheels can reach it; this
+                            # says they can get there in time. A line is only
+                            # worth what the car can follow, and the measured
+                            # servo needs a third of a second for full travel --
+                            # about 1.5 rad/s. Every line solved without this
+                            # demanded more than that for a fifth of the lap.
+                            angle = torch.atan(wheelbase_m * kappa)
+                            per_metre = (
+                                torch.roll(angle, -1) - torch.roll(angle, 1)
+                            ) / (2.0 * segment.clamp(min=1e-9))
+                            rate = (per_metre * speed).abs()
+                            over = (rate - steer_rate_limit).clamp(min=0.0)
+                            loss = loss + weight * (over**2).mean()
                     loss.backward()
                     optimizer.step()
                     with torch.no_grad():

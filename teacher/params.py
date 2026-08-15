@@ -1,11 +1,11 @@
 """The controller's parameters: what CMA-ES searches over.
 
-Eighty-nine numbers in five groups:
+A hundred and seventy numbers in five groups:
 
 ======================  =====  ===============================================
 group                   count  what it does
 ======================  =====  ===============================================
-``line``                  40   racing line, as lateral offset control points
+``line``                 120   racing line, as lateral offset control points
 ``speed_scale``           30   local multiplier on the quasi-static profile
 effective limits           4   a_lat, a_accel, a_brake, kappa_max
 gains                     11   lookahead, steering blend, feedback
@@ -48,8 +48,24 @@ from pathlib import Path
 
 import numpy as np
 
-#: Racing-line control points. Matches the resolution the warm-start solve uses.
-LINE_POINTS = 40
+#: Racing-line control points.
+#:
+#: Tripled from 40, because at 40 the basis could not express a racing line on
+#: this track and no amount of searching was going to fix that. The bumps in
+#: :func:`~tools.profile.periodic_basis` scale with the spacing between control
+#: points, so one knot at 40 influences **4.58 m** of track while a corner here
+#: is **1.63 m**. Moving a knot moved the line across a corner and both straights
+#: either side at once, so radius bought in one corner was paid back in its
+#: neighbours, and the optimizer's best answer was to sit near the centerline.
+#:
+#: Measured on the best candidate before the change: 13 of 14 corners gave away
+#: radius against the flattest line the corridor allows, 0.41 m on average, two
+#: of them using 16% and 17% of the width available. The flattest-line solve was
+#: basis-limited too — R_min 0.517 m at 40 knots against 0.763 m at 160.
+#:
+#: At 120 a knot spans about 1.5 m, near enough one corner, so entry, apex and
+#: exit can finally be placed independently.
+LINE_POINTS = 120
 
 #: Knots in the speed multiplier.
 #:

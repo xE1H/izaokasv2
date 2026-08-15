@@ -354,29 +354,36 @@ class TeamEnv(RaceEnv):
         )
         lap_bonus = car.lap.just_finished.float() * under**2 * LAP_BONUS_SCALE
 
-        # One shaping term, deliberately small. It must never be worth earning on
-        # its own — the classic failure is a term a car can farm by not racing —
-        # and it is kept light because a car asked for the fastest lap it can
-        # manage should be allowed to saw at the wheel if that is what is quick.
+        # **No shaping penalties at all**, and both of the obvious ones were
+        # tried and measured rather than reasoned away.
         #
-        # There is no wheel-slip penalty, and that is deliberate twice over.
-        # `car.slip` is `|wheel_speed - ground| / max(ground, 1e-3)`, which is
-        # unbounded and blows up at a standing start, where the ground speed is
-        # ~0 and the wheels are spinning up: squared, it would reach the
-        # thousands on the first step of every episode and drown the rest of the
-        # reward. Even bounded it would be the wrong idea here, because wheelspin
-        # off the line is how the car launches.
-        steer_rate = (car.steer_cmd - car.steer_cmd_prev) ** 2
-        penalty = 0.01 * steer_rate
-
-        reward = distance + lap_bonus - penalty
+        # A wheel-slip penalty is the dangerous one. `car.slip` is
+        # `|wheel_speed - ground| / max(ground, 1e-3)`, a ratio and not a
+        # fraction, so at a standing start — ground speed ~0, wheels spinning up
+        # — it reaches the hundreds. Squared and scaled at 0.005 it measured
+        #
+        #     Rewards/distance      0.0017
+        #     Rewards/penalty_slip  921.83
+        #
+        # half a million times the term it was meant to shape, and it taught the
+        # car that touching the throttle from rest is catastrophic. Even bounded
+        # it would be wrong here: wheelspin off the line is how this car
+        # launches, and a brief slide through a short corner is the one
+        # mechanism that could beat the quasi-static limit.
+        #
+        # A steering-rate penalty is subtler and was dropped for a better
+        # reason. It is largest exactly when the policy is most random, which is
+        # when it should be exploring: at init_noise_std 1.0 it measured 0.0078
+        # against a distance term of 0.0032, so the first thing the policy would
+        # have learned is to stop steering — on a car whose steering is saturated
+        # for 41% of a fast lap. Smoothness is not the objective; a lap time is.
+        reward = distance + lap_bonus
 
         # Logged apart so TensorBoard says which term is moving the policy. If
         # Rewards/lap_bonus stays flat at zero, no car is completing a lap and
         # the sparse term is doing nothing — that is the signal to look at.
         self.log("Rewards/distance", distance)
         self.log("Rewards/lap_bonus", lap_bonus)
-        self.log("Rewards/penalty_steer_rate", penalty)
         return reward
 
     # ══════════════════════════════════════════════════════════════════════

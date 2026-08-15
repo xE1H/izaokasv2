@@ -39,6 +39,38 @@ measured alone, does not complete a lap. `--measure` now fans out to one cold
 process per file. **Any figure in an older note that came from a multi-file
 run is suspect.**
 
+## Submitted: 13.967 s
+
+`results/rl/model_1125_13.967s_1k.pt`, at `--agents 1000 --seed 1`, official
+rules. On the board as **awaiting verification**, and it would be P1.
+
+Reproduces exactly: three cold runs, all 13.967 s, identical tie structure.
+
+**It is a single-car result and that is the risk.** At 1000 attempts the times
+are quantised to the 30 Hz step, and they clump:
+
+    13.967 s :  1 car     <- the submitted lap
+    14.033 s :  5 cars
+    14.067 s : 16 cars
+    14.100 s : 26 cars
+
+So the submitted time sits one car deep, where cross-machine PhysX differences
+decide whether it reproduces. The first genuinely solid time is 14.067. A
+verifiable sub-14 needs the whole distribution about 0.1 s faster, not more
+sampling.
+
+### Publishing has to happen off the GPU box
+
+The vast.ai instance uploads at **546 B/s**. The lap itself posts fine — it is a
+small JSON — but the 5 MB policy bundle cannot finish inside the 120 s
+per-part timeout, and every attempt from the box reported "the policy did not
+upload", which would have left the lap permanently unverifiable.
+
+`lituanicax_sdk.bundle` and `lituanicax_sdk.submit` are stdlib-only, and the SDK
+fingerprint matches on both machines (`e08cd1b71e18`), so the bundle can be
+built and published from a laptop with the checkpoint, `params/` and
+`teamcode/`. That is the same submission over a connection that works.
+
 ## The RL policy
 
 Training in `teamcode/` — 40 observations with a curvature preview, a convex

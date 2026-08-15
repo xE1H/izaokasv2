@@ -185,12 +185,19 @@ def measure_each_in_its_own_process(files: list[str]) -> int:
     """
     import subprocess  # noqa: PLC0415
 
-    head = [a for a in argv_original if a not in files]
-    head = [a for a in head if a != "--measure"]
+    # Re-enter the same way this process was entered. Under ``python -m`` that
+    # is the module name, not ``argv[0]`` — which is the module's *file path*,
+    # and re-running that puts ``teacher/`` on sys.path instead of the package
+    # root, so the child dies on its own imports.
+    entry = ["-m", __spec__.name] if __spec__ is not None else [argv_original[0]]
+    dropped = {*files, "--measure"}
+    head = [a for a in argv_original[1:] if a not in dropped]
     status = 0
     for path in files:
         print(f"\n[optimize] === {Path(path).name} — fresh simulator ===", flush=True)
-        status |= subprocess.call([sys.executable, *head, "--measure", path])
+        status |= subprocess.call(
+            [sys.executable, *entry, *head, "--measure", path]
+        )
     return status
 
 

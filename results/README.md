@@ -39,6 +39,48 @@ measured alone, does not complete a lap. `--measure` now fans out to one cold
 process per file. **Any figure in an older note that came from a multi-file
 run is suspect.**
 
+## The RL policy
+
+Training in `teamcode/` — 40 observations with a curvature preview, a convex
+lap-time bonus, `gamma` 0.9965, 3072 environments. Progress from a standing
+start, all figures the *flying* lap TensorBoard reports:
+
+| iteration | best flying lap |
+|---|---|
+| 38 | 28.0 s — first completed laps |
+| 47 | 17.6 s |
+| 93 | 15.1 s |
+| 175 | 14.2 s |
+| 258 | 14.1 s |
+
+### TensorBoard is not the score, and the gap is not constant
+
+`Lap/best_lap_time_s` times a **flying** lap, gate to gate. The benchmark times
+a **standing start** from the world origin. Measured on the same checkpoints:
+
+    flying 17.5 s  ->  scored 17.933 s   (+0.43)
+    flying 14.2 s  ->  scored 15.000 s   (+0.77)
+
+The offset **grows as the car gets faster**, because the launch costs a roughly
+fixed amount of time against an ever-shorter lap. So a target of 14.3 s scored
+needs about **13.5 s flying**, not 13.9 s. Any projection from TensorBoard that
+assumes a constant offset will be optimistic, and the first one made here was.
+
+### The heading band has a fast tail, unlike the controller
+
+Ten attempts at seed 0 on the 15.000 s checkpoint spanned **15.000 to 16.033 s**
+— a 1.03 s range, with the two quickest at −2.7° and −4.8°. That matters
+because `--agents` is uncapped and replayed verbatim by verification, so a
+distribution with a real basin can be sampled for its best. The deterministic
+controller failed exactly this test: its best lap was flat from 10 agents to
+150, because when it lapped at all it lapped at 14.9–15.2 and the variance was
+in *whether* it finished rather than in how fast.
+
+Worth noting the two fastest headings sit outside the ±1.15° band the policy
+trains on, so this tail is generalisation rather than the specialisation it was
+designed for. The conclusion — that spending agents pays here — holds either
+way, but the mechanism is not the intended one.
+
 ## The car
 
 | file | what it is |

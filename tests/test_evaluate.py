@@ -14,6 +14,7 @@ that the scoring is right.
 
 from __future__ import annotations
 
+import json
 import math
 from types import SimpleNamespace
 
@@ -384,16 +385,29 @@ def test_official_start_offsets_match_the_benchmark_spread():
     assert np.abs(offsets).max() <= math.radians(5.0)
 
 
-def test_official_start_offsets_span_the_whole_jitter_range():
-    """Ten evenly spaced headings, not ten random ones.
+def test_measured_headings_win_over_the_even_spacing(tmp_path, monkeypatch):
+    """When the benchmark's own ten are known, they are what gets optimized.
 
-    The benchmark tests exactly one situation and takes the fastest of ten
-    attempts, so what matters is being quick across the whole ±5° interval.
-    Random draws clump and leave gaps; even spacing hits both extremes, so a
-    candidate that laps all ten laps everything between them and whatever the
-    benchmark happens to draw falls inside what was optimized.
+    The fallback spreads headings evenly, which is the right answer when the
+    real ones are unknown and strictly worse when they are not: the benchmark's
+    actual draw is skewed, six of ten above +2.9 degrees, so evenly spaced
+    offsets put half their effort where it never goes.
     """
-    offsets = official_start_offsets()
+    from tools import evaluate
+
+    real = [0.01, -0.02, 0.03, 0.04]
+    path = tmp_path / "headings.json"
+    path.write_text(json.dumps({"offsets_rad": real}))
+    monkeypatch.setattr(evaluate, "MEASURED_HEADINGS", path)
+    assert np.allclose(evaluate.official_start_offsets(4), real)
+
+
+def test_even_spacing_is_the_fallback(tmp_path, monkeypatch):
+    """For a track or a seed nobody has measured yet."""
+    from tools import evaluate
+
+    monkeypatch.setattr(evaluate, "MEASURED_HEADINGS", tmp_path / "absent.json")
+    offsets = evaluate.official_start_offsets()
     limit = math.radians(5.0)
     assert offsets.min() == pytest.approx(-limit)
     assert offsets.max() == pytest.approx(limit)
@@ -407,8 +421,12 @@ def test_official_start_offsets_do_not_depend_on_luck():
     assert np.allclose(official_start_offsets(seed=1), official_start_offsets(seed=2))
 
 
-def test_zero_jitter_gives_identical_starts():
-    assert np.allclose(official_start_offsets(jitter_deg=0.0), 0.0)
+def test_zero_jitter_gives_identical_starts(tmp_path, monkeypatch):
+    """Only meaningful for the fallback: measured headings are what they are."""
+    from tools import evaluate
+
+    monkeypatch.setattr(evaluate, "MEASURED_HEADINGS", tmp_path / "absent.json")
+    assert np.allclose(evaluate.official_start_offsets(jitter_deg=0.0), 0.0)
 
 
 def test_repeated_starts_gives_every_candidate_the_same_starts(circle):

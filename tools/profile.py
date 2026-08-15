@@ -39,6 +39,8 @@ them, so the fastest line on paper is one the car physically cannot steer. Pass
 
 from __future__ import annotations
 
+from functools import lru_cache
+
 import numpy as np
 import torch
 
@@ -326,14 +328,15 @@ def _torch_curvature(pos: torch.Tensor) -> torch.Tensor:
     return 2.0 * cross / denominator
 
 
-def periodic_basis(count: int, control_points: int) -> np.ndarray:
-    """Periodic smooth basis, ``[M, K]``, rows non-negative and summing to one.
+@lru_cache(maxsize=16)
+def _basis(count: int, control_points: int) -> np.ndarray:
+    """The basis itself. Cached: it depends on nothing but its two arguments.
 
-    That last property is what makes the corridor cheap: ``n = B w`` is then a
-    weighted average of ``w``, so ``|w_j| <= half_width`` for every ``j`` implies
-    ``|n_i| <= half_width`` everywhere. The corridor becomes a box constraint on
-    the coefficients and the whole solve stays L-BFGS-B rather than needing a
-    general QP solver.
+    Worth caching because of where it is called from. ``build_reference`` runs
+    once per candidate per generation, and at 120 control points over 2500
+    samples this is a 300,000-element matrix rebuilt every time — for a
+    population of twelve, twelve times a generation, for thousands of
+    generations, all identical.
     """
     index = np.arange(count)
     centres = np.linspace(0.0, count, control_points, endpoint=False)
@@ -342,7 +345,24 @@ def periodic_basis(count: int, control_points: int) -> np.ndarray:
     distance = np.abs(index[:, None] - centres[None, :])
     distance = np.minimum(distance, count - distance)
     basis = np.exp(-0.5 * (distance / width) ** 2)
-    return basis / basis.sum(axis=1, keepdims=True)
+    basis = basis / basis.sum(axis=1, keepdims=True)
+    basis.setflags(write=False)
+    return basis
+
+
+def periodic_basis(count: int, control_points: int) -> np.ndarray:
+    """Periodic smooth basis, ``[M, K]``, rows non-negative and summing to one.
+
+    That last property is what makes the corridor cheap: ``n = B w`` is then a
+    weighted average of ``w``, so ``|w_j| <= half_width`` for every ``j`` implies
+    ``|n_i| <= half_width`` everywhere. The corridor becomes a box constraint on
+    the coefficients and the whole solve stays L-BFGS-B rather than needing a
+    general QP solver.
+
+    The returned array is read-only and shared between callers, since it is
+    cached — treat it as the constant it is.
+    """
+    return _basis(int(count), int(control_points))
 
 
 def widest_achievable_radius(

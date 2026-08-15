@@ -343,7 +343,18 @@ CRASH_CEILING = 200.0
 #: otherwise equal, because a teacher that laps once in ten produces
 #: demonstrations Phase 3 cannot learn much from. At 0.1 s it can never
 #: outweigh a real difference in pace.
-CONSISTENCY_BONUS_S = 0.1
+#:
+#: **Now zero, and it should stay there.** ``--agents`` has no cap
+#: (``benchmark.py:97``) and is replayed verbatim by verification
+#: (``verify.py:328``), so the attempt count is the competitor's to choose and
+#: the score is the fastest of however many are run. A candidate that laps once
+#: in a hundred at 14.0 s beats one that laps every time at 14.9 s, and any
+#: preference for finishing often makes the search reject exactly the fast,
+#: marginal candidates that win. The Phase 3 argument for it -- that an
+#: unreliable teacher gives poor demonstrations -- is a reason to re-measure the
+#: chosen teacher at more attempts, not a reason to steer the search away from
+#: pace.
+CONSISTENCY_BONUS_S = 0.0
 
 
 def objective(

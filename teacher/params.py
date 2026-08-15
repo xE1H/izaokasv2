@@ -196,6 +196,32 @@ LINE_BOUND = Bound(-0.195, 0.195)
 #: counts and nine failures are free.
 SPEED_BOUND = Bound(0.5, 2.2)
 
+
+def _to_resolution(knots: np.ndarray, points: int) -> np.ndarray:
+    """Re-express a knot vector on ``points`` knots, preserving what it *says*.
+
+    Checkpoints outlive the resolution they were searched at -- ``LINE_POINTS``
+    has already gone 40 -> 120 once. A 40-knot line still drives correctly,
+    because the reference is built on a basis sized from the vector it is given,
+    so the mismatch surfaces nowhere until the search normalizes the vector and
+    gets 91 numbers where it wanted 171. That is a long way from the cause.
+
+    Refit rather than copy across. The two bases have different bump widths, so
+    carrying knot values over changes the curve they describe; least squares on
+    the fine basis preserves the profile instead (measured refit error 9e-5 m
+    going 40 -> 120), which is the difference between reloading the driver that
+    was saved and reloading a slightly different one.
+    """
+    from tools.profile import periodic_basis  # noqa: PLC0415  (import cycle)
+
+    if knots.size == points:
+        return knots
+    dense = 8 * max(knots.size, points)
+    curve = periodic_basis(dense, knots.size) @ knots
+    refit, *_ = np.linalg.lstsq(periodic_basis(dense, points), curve, rcond=None)
+    return refit
+
+
 #: Total number of searched parameters.
 DIMENSION = LINE_POINTS + SPEED_POINTS + len(SCALAR_BOUNDS)
 
@@ -340,8 +366,10 @@ class ControllerParams:
     @classmethod
     def from_dict(cls, data: dict) -> "ControllerParams":
         params = cls(
-            line=np.asarray(data["line"], dtype=np.float64),
-            speed_scale=np.asarray(data["speed_scale"], dtype=np.float64),
+            line=_to_resolution(np.asarray(data["line"], dtype=np.float64), LINE_POINTS),
+            speed_scale=_to_resolution(
+                np.asarray(data["speed_scale"], dtype=np.float64), SPEED_POINTS
+            ),
         )
         for name in cls.scalar_names():
             if name in data:

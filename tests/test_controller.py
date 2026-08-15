@@ -76,6 +76,36 @@ def test_dimension_matches_the_documented_groups():
     assert DIMENSION == 171
 
 
+def test_a_checkpoint_from_an_older_resolution_still_loads():
+    """Checkpoints outlive the resolution they were searched at.
+
+    ``LINE_POINTS`` has gone 40 -> 120 once already, and a 40-knot file kept
+    driving correctly the whole time, because the reference is built on a basis
+    sized from the vector it is handed. So nothing complained until the search
+    normalized one and got 91 numbers where it wanted 171 — a failure a long
+    way from its cause, and one that cost three searches their startup.
+
+    The refit has to preserve the *curve*, not the knots: the two bases have
+    different bump widths, so copying values across would quietly reload a
+    different driver than the one that was saved.
+    """
+    from tools.profile import periodic_basis
+
+    from teacher.params import DIMENSION, LINE_POINTS
+
+    knots = np.linspace(-0.15, 0.15, 40)
+    params = ControllerParams.from_dict(
+        {"line": list(knots), "speed_scale": [1.0] * SPEED_POINTS, "k_e": 2.5}
+    )
+    assert params.to_vector().size == DIMENSION
+    assert params.to_normalized().size == DIMENSION
+    assert params.k_e == 2.5, "scalars must survive the resolution change"
+
+    before = periodic_basis(2000, 40) @ knots
+    after = periodic_basis(2000, LINE_POINTS) @ params.line
+    assert np.abs(before - after).max() < 1e-3, "the refit changed the line"
+
+
 def test_the_line_cannot_be_searched_into_a_wall():
     """The corridor bound is the only thing standing between the search and a
     voided lap, and it has been widened once already.

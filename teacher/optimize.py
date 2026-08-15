@@ -81,7 +81,21 @@ parser.add_argument(
     ),
 )
 parser.add_argument(
-    "--sigma", type=float, default=0.15, help="Initial step, normalized."
+    "--sigma",
+    type=float,
+    default=0.02,
+    help=(
+        "Initial step, normalized, PER COORDINATE. Scale it to the dimension: "
+        "an isotropic Gaussian in D dimensions puts a typical sample "
+        "sigma*sqrt(D) away from the mean, and D is 171 here, so sqrt(D) is 13. "
+        "At the old default of 0.15 that is a displacement of 1.9 in a space "
+        "where every coordinate's full range is 1.0 — every sample a random "
+        "driver rather than a perturbation of the warm start. Measured, from "
+        "the same 14.9 s seed: sigma 0.08 lapped 0 of 12 candidates in "
+        "generation 1 and was still stuck around 16 s sixty generations later, "
+        "while sigma 0.02 lapped 6 of 12 immediately and improved on the seed "
+        "by generation 3. Raise it only if the search has genuinely converged."
+    ),
 )
 parser.add_argument(
     "--episode", type=float, default=25.0, help="Search attempt window, s."

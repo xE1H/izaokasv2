@@ -19,6 +19,7 @@ exercised before a GPU is rented. They are deliberately conservative, and
 from __future__ import annotations
 
 import json
+import sys
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
@@ -159,9 +160,24 @@ class Measured:
 
     @classmethod
     def load(cls, path: str | Path = DEFAULT_PATH) -> "Measured":
-        """Read a probe result, or return the guesses if none exists yet."""
+        """Read a probe result, or return the guesses if none exists yet.
+
+        The fallback says so on stderr. The ``measured`` flag has always carried
+        the truth, but only :meth:`describe` looked at it, so a caller that just
+        wanted ``a_lat`` got the guess and no hint that it was one. That is not
+        hypothetical: a corridor-versus-grip sweep run on a checkout without
+        ``artifacts/dynamics.json`` reported an a_lat of 8.00 and an R_min of
+        0.490 as if measured, when the probe says 9.62 and 0.523, and the whole
+        table had to be withdrawn. Construct ``Measured()`` directly if the
+        defaults are what you actually want.
+        """
         path = Path(path)
         if not path.is_file():
+            print(
+                f"[car] WARNING: no probe result at {path} — using GUESSED "
+                "constants. Run `python -m tools.probe` for measured ones.",
+                file=sys.stderr,
+            )
             return cls()
         data = json.loads(path.read_text())
         known = {f for f in cls.__dataclass_fields__}

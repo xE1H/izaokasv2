@@ -297,13 +297,20 @@ class TeamEnv(RaceEnv):
         )
         lap_bonus = car.lap.just_finished.float() * under**2 * LAP_BONUS_SCALE
 
-        # Shaping, deliberately small. These say *how* to drive and must never be
-        # worth earning on their own — the classic failure is a term a car can
-        # farm by not racing. Kept lighter than they would be for a policy meant
-        # to look tidy: a car being asked to find the fastest lap it can should
-        # be allowed to saw at the wheel and slide if that is what is quick.
+        # One shaping term, deliberately small. It must never be worth earning on
+        # its own — the classic failure is a term a car can farm by not racing —
+        # and it is kept light because a car asked for the fastest lap it can
+        # manage should be allowed to saw at the wheel if that is what is quick.
+        #
+        # There is no wheel-slip penalty, and that is deliberate twice over.
+        # `car.slip` is `|wheel_speed - ground| / max(ground, 1e-3)`, which is
+        # unbounded and blows up at a standing start, where the ground speed is
+        # ~0 and the wheels are spinning up: squared, it would reach the
+        # thousands on the first step of every episode and drown the rest of the
+        # reward. Even bounded it would be the wrong idea here, because wheelspin
+        # off the line is how the car launches.
         steer_rate = (car.steer_cmd - car.steer_cmd_prev) ** 2
-        penalty = 0.01 * steer_rate + 0.005 * car.slip**2
+        penalty = 0.01 * steer_rate
 
         reward = distance + lap_bonus - penalty
 
@@ -312,8 +319,7 @@ class TeamEnv(RaceEnv):
         # the sparse term is doing nothing — that is the signal to look at.
         self.log("Rewards/distance", distance)
         self.log("Rewards/lap_bonus", lap_bonus)
-        self.log("Rewards/penalty_steer_rate", 0.02 * steer_rate)
-        self.log("Rewards/penalty_slip", 0.01 * car.slip**2)
+        self.log("Rewards/penalty_steer_rate", penalty)
         return reward
 
     # ══════════════════════════════════════════════════════════════════════

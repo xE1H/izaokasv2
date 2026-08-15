@@ -98,6 +98,25 @@ LAP_BONUS_MAX_UNDER_S = 6.0
 #: is decisively the larger prize.
 LAP_BONUS_SCALE = 2.0
 
+#: The same idea applied to the thing that is *actually scored*, which is not
+#: the same lap.
+#:
+#: ``car.lap.last_time_s`` times a **flying** lap, gate to gate. A scored
+#: attempt is a **standing start** from the world origin, and measured on this
+#: policy the difference is 0.77 s — the launch, which the lap bonus above
+#: cannot see and therefore never pays for. Rewarding pace on a lap the car
+#: enters at speed leaves the one part of the run that begins at 0 m/s
+#: optimised only by the generic distance term.
+#:
+#: On the step the first lap of a stint closes, ``episode_time_s`` is the whole
+#: elapsed time from the spawn — out-lap plus flying lap — so it contains the
+#: launch and is monotone in the quantity the benchmark reports. Squared for the
+#: same reason as the lap bonus: only the fastest attempt is scored, so the
+#: reward should curve towards the fast end rather than the reliable middle.
+ATTEMPT_BONUS_REFERENCE_S = 24.0
+ATTEMPT_BONUS_MAX_UNDER_S = 8.0
+ATTEMPT_BONUS_SCALE = 1.0
+
 
 # ══════════════════════════════════════════════════════════════════════════
 #  Where the cars drive
@@ -354,6 +373,17 @@ class TeamEnv(RaceEnv):
         )
         lap_bonus = car.lap.just_finished.float() * under**2 * LAP_BONUS_SCALE
 
+        # The launch, which the lap bonus cannot see. On the step the *first*
+        # lap of a stint closes, `episode_time_s` covers everything since the
+        # spawn — the standing start, the out-lap and the flying lap — which is
+        # the shape of the quantity a scored attempt reports. Without this the
+        # 0.77 s the car spends getting up to speed is nobody's objective.
+        first_lap = car.lap.just_finished & (car.lap.count == 1)
+        attempt_under = (ATTEMPT_BONUS_REFERENCE_S - car.episode_time_s).clamp(
+            0.0, ATTEMPT_BONUS_MAX_UNDER_S
+        )
+        attempt_bonus = first_lap.float() * attempt_under**2 * ATTEMPT_BONUS_SCALE
+
         # **No shaping penalties at all**, and both of the obvious ones were
         # tried and measured rather than reasoned away.
         #
@@ -377,13 +407,14 @@ class TeamEnv(RaceEnv):
         # against a distance term of 0.0032, so the first thing the policy would
         # have learned is to stop steering — on a car whose steering is saturated
         # for 41% of a fast lap. Smoothness is not the objective; a lap time is.
-        reward = distance + lap_bonus
+        reward = distance + lap_bonus + attempt_bonus
 
         # Logged apart so TensorBoard says which term is moving the policy. If
         # Rewards/lap_bonus stays flat at zero, no car is completing a lap and
         # the sparse term is doing nothing — that is the signal to look at.
         self.log("Rewards/distance", distance)
         self.log("Rewards/lap_bonus", lap_bonus)
+        self.log("Rewards/attempt_bonus", attempt_bonus)
         return reward
 
     # ══════════════════════════════════════════════════════════════════════

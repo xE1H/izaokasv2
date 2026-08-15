@@ -320,9 +320,12 @@ def search(
                 started = time.time()
                 solutions = strategy.ask()
                 candidates = [ControllerParams.from_normalized(x) for x in solutions]
-            if args_cli.freeze_line:
-                for candidate in candidates:
-                    candidate.line = frozen_line
+                if args_cli.freeze_line:
+                    # The line is the warm start's and stays that way; CMA-ES
+                    # still varies those coordinates and still gets told the
+                    # loss, so it simply learns they do nothing.
+                    for candidate in candidates:
+                        candidate.line = frozen_line
                 losses, details = score_generation(
                     env,
                     geometry,

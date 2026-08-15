@@ -46,7 +46,9 @@ HALF, CRASH = 0.351, 0.15
 
 def load(path):
     params = ControllerParams.load(path)
-    ref = build_reference(geom, params, v_max=car.v_max_m_s, wheelbase_m=car.wheelbase_m)
+    ref = build_reference(
+        geom, params, v_max=car.v_max_m_s, wheelbase_m=car.wheelbase_m
+    )
     off = ref.offset.cpu().numpy()
     _, _, kap = offset_path(geom, off)
     return {"xy": centre + off[:, None] * normal, "offset": off, "kappa": kap,
@@ -130,7 +132,8 @@ for col, (gain, a, b, r_old, r_new) in enumerate(picks):
     zx.set_xlim(seg[:, 0].min() - pad, seg[:, 0].max() + pad)
     zx.set_ylim(seg[:, 1].min() - pad, seg[:, 1].max() + pad)
     zx.set_aspect("equal")
-    zx.set_xticks([]); zx.set_yticks([])
+    zx.set_xticks([])
+    zx.set_yticks([])
     for s in zx.spines.values():
         s.set_color(RULE)
     zx.set_title(f"{col + 1}   at {arc[a]:.0f} m      R  {r_old:.2f} → "

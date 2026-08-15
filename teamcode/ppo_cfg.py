@@ -25,7 +25,10 @@ class TeamPPORunnerCfg(RslRlOnPolicyRunnerCfg):
     # One "iteration" = collect `num_steps_per_env` steps in every environment,
     # then run a few passes of gradient descent over that batch of experience.
     num_steps_per_env: int = 800
-    max_iterations: int = 50  # can be overridden with --max_iterations
+    #: 50 was a smoke-test budget. A lap is ~15 s and the policy has to find one
+    #: before it can start shaving it, which takes tens of iterations on its own.
+    #: At roughly 2 min/iteration on 3072 environments this is about ten hours.
+    max_iterations: int = 300
     save_interval: int = 5  # save a checkpoint every N iterations
 
     # A label for the experiment.  Checkpoints go to logs/<timestamp>/ either
@@ -46,11 +49,18 @@ class TeamPPORunnerCfg(RslRlOnPolicyRunnerCfg):
     # speed you can correct from" and not enough for a policy that treats each
     # corner differently. Widen them as you widen the observation.
     policy: RslRlPpoActorCriticCfg = RslRlPpoActorCriticCfg(
-        init_noise_std=0.8,  # how randomly the car explores at the start
+        # Explore harder than the baseline. The target is the *fastest* lap out
+        # of many attempts, not a dependable one, so the policy has to find a
+        # committed line rather than settle into the safe middle of the corridor.
+        init_noise_std=1.0,
         actor_obs_normalization=True,  # keep network inputs on a common scale
         critic_obs_normalization=True,
-        actor_hidden_dims=[64, 64],  # two hidden layers, 64 neurons each
-        critic_hidden_dims=[64, 64],
+        # 64 units was sized for three observations. There are now 34, twenty-one
+        # of which are a curvature preview of the track ahead, and the policy is
+        # meant to treat each corner differently rather than learn one rule for
+        # all of them.
+        actor_hidden_dims=[256, 256, 128],
+        critic_hidden_dims=[256, 256, 128],
         activation="elu",
     )
 
@@ -61,16 +71,20 @@ class TeamPPORunnerCfg(RslRlOnPolicyRunnerCfg):
         num_learning_epochs=6,  # passes over each batch of collected experience
         num_mini_batches=6,
         clip_param=0.2,  # how far the policy may move in a single update
-        entropy_coef=0.004,  # higher = keeps exploring for longer
+        entropy_coef=0.006,  # higher = keeps exploring for longer
         value_loss_coef=1.0,
         use_clipped_value_loss=True,
-        # Discount: how much future reward counts right now. At 30 Hz this is a
-        # horizon of about 3 s — enough to see a wall coming and slow for it,
-        # nowhere near the ~10 s of a whole lap, so the policy cannot learn to
-        # give up speed *here* for a better exit *there*. That is most of why
-        # the baseline drives corner by corner instead of driving a lap. 0.9965
-        # is the value that puts a full lap inside the horizon.
-        gamma=0.99,
+        # Discount: how much future reward counts right now. At 0.99 and 30 Hz
+        # the horizon is about 3 s — enough to see a wall coming and slow for
+        # it, nowhere near the ~15 s of a lap, so the policy cannot learn to give
+        # up speed *here* for a better exit *there*, which is what driving a lap
+        # rather than a sequence of corners actually means.
+        #
+        # 0.9965 is the value this file already identified as putting a whole lap
+        # inside the horizon, and it matters twice over now: the lap-time bonus
+        # in `compute_reward` is paid once, at the end of a lap, and at a 3 s
+        # horizon a car most of a lap away from that payout cannot see it at all.
+        gamma=0.9965,
         lam=0.95,  # GAE lambda: bias/variance trade-off
         desired_kl=0.01,  # target amount of policy change per update
         max_grad_norm=0.75,

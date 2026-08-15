@@ -182,8 +182,15 @@ def test_the_warm_start_line_is_as_flat_as_the_corridor_allows(official):
     _, _, kappa = offset_path(official, report_line(official, params))
     peak_radius = 1.0 / float(np.abs(kappa).max())
 
+    # In the line's own basis. widest_achievable_radius defaults to a coarser
+    # one, and the resolution is not a detail here: the same corridor yields
+    # R_min 0.517 m at 40 control points and 0.763 m at 160, because a bump
+    # spanning several corners cannot open one of them without closing its
+    # neighbours.
     reachable, _ = widest_achievable_radius(
-        official, half_width=report["line_half_width_m"]
+        official,
+        half_width=report["line_half_width_m"],
+        control_points=LINE_POINTS,
     )
     assert peak_radius == pytest.approx(min(reachable, car.r_min_m), rel=0.1)
     assert report["r_min_m"] == car.r_min_m, "the report must not flatter the car"

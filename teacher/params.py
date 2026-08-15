@@ -145,6 +145,15 @@ SCALAR_BOUNDS: dict[str, Bound] = {
     #    assumes it goes where its wheels point, and at 41% steering saturation
     #    it demonstrably cannot. At 0 the law is the one that produced 15.067 s.
     "slip_gain": Bound(0.0, 0.20),
+    #    Seconds of *lead* on the reference the steering aims at. The servo is a
+    #    first-order lag of about 0.33 s, so an angle commanded now arrives two
+    #    metres of track later, by which point the corner asking for it has
+    #    changed — every steering term above reads the reference at the car's
+    #    own arc length and is therefore that far behind. The inverse of a
+    #    first-order lag is lead, so the reference is read at ``s + k_lead*v``
+    #    instead. Bounded past the measured lag because the effective delay
+    #    includes the tyre building slip, not just the servo travelling.
+    "k_lead": Bound(0.0, 0.6),
 }
 
 #: Corridor for the line, metres either side of the centerline. Matches
@@ -212,6 +221,7 @@ class ControllerParams:
     k_rotate: float = 0.0
     steer_ratio_eff: float = 1.0
     slip_gain: float = 0.0
+    k_lead: float = 0.0
 
     # ──────────────────────────────────────────────────────────────────────
     #  Vector conversion

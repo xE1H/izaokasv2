@@ -73,7 +73,7 @@ def test_dimension_matches_the_documented_groups():
     assert DIMENSION == LINE_POINTS + SPEED_POINTS + len(
         ControllerParams.scalar_names()
     )
-    assert DIMENSION == 170
+    assert DIMENSION == 171
 
 
 def test_vector_round_trip():
@@ -122,7 +122,7 @@ def test_out_of_bounds_values_are_clipped_not_rejected():
 
 
 def test_wrong_length_vector_is_rejected():
-    with pytest.raises(ValueError, match="expected 170"):
+    with pytest.raises(ValueError, match="expected 171"):
         ControllerParams.from_vector(np.zeros(12))
 
 
@@ -453,6 +453,80 @@ def test_rotation_braking_only_fires_at_the_steering_stop(circle, robot, make_st
     braking = dynamic(circle, k_rotate=2.0)
     # A 5 m circle at 1 m/s needs almost no steering, so the stop is far away.
     assert float(braking(gentle)[0, 0]) == pytest.approx(float(plain(gentle)[0, 0]))
+
+
+def test_lead_is_inert_at_zero_and_on_a_constant_corner(circle, robot, make_state):
+    """Two properties at once, and the second is why the first is not enough.
+
+    At ``k_lead = 0`` the law must be exactly the one that verified at 15.367 s,
+    so the search starts where it left off. And on a circle — whose curvature is
+    the same everywhere — leading the reference can have no effect at any gain,
+    which pins the term to *changing* curvature rather than to arc length.
+    """
+    car = make_state(place(robot, radius=RADIUS, theta=0.4, speed=2.5))
+    plain = dynamic(circle)
+    assert torch.allclose(dynamic(circle, k_lead=0.0)(car), plain(car))
+    # Not bit-identical, unlike the gain at zero: a circle sampled every 20 mm
+    # has curvature that ripples by a fraction of a percent, so reading it 0.75 m
+    # further round moves the command by 2e-4 rad. That is the discretization,
+    # not the term — a real change of corner moves it by two orders more.
+    assert torch.allclose(dynamic(circle, k_lead=0.3)(car), plain(car), atol=1e-3)
+
+
+def test_lead_steers_for_the_corner_ahead_not_the_one_underneath(robot, make_state):
+    """The point of the term: on the approach to a corner it turns in early.
+
+    A servo that takes ten steps to place the wheels puts the angle on the road
+    about two metres further round than where it was asked for, so a controller
+    reading the reference at its own arc length is permanently a corner behind.
+    Here the car sits on a straight with a corner ahead: without lead the
+    curvature underneath it is nil and the feedforward asks for nothing.
+    """
+    from lituanicax_sdk.track import Track
+    from lituanicax_sdk.tracks import OFFICIAL
+
+    geometry = TrackGeometry.from_track(Track(OFFICIAL, device="cpu"), spacing_m=0.02)
+    params = ControllerParams()
+    reference = build_reference(geometry, params, v_max=V_MAX)
+    kappa = reference.kappa
+
+    speed, lead = 5.0, 0.4
+    step = int(round(speed * lead / geometry.spacing_m))
+    # Somewhere flat now with a real corner one lead-distance ahead. Restricted
+    # to the flat samples first: the largest *gain* in curvature on this layout
+    # is corner-to-tighter-corner, which is not the case being tested.
+    flat = kappa.abs() < 0.2
+    index = int(torch.argmax(torch.where(flat, kappa.roll(-step).abs(), -1.0)))
+    assert float(kappa[index].abs()) < 0.2, "the chosen spot is not a straight"
+
+    position = geometry.pos[index]
+    tangent = geometry.tangent[index]
+    yaw = float(torch.atan2(tangent[1], tangent[0]))
+    robot.data.root_pos_w[:, 0] = float(position[0])
+    robot.data.root_pos_w[:, 1] = float(position[1])
+    robot.set_yaw(yaw)
+    robot.data.root_lin_vel_b[:, 0] = speed
+    robot.data.root_lin_vel_w[:, 0] = speed * math.cos(yaw)
+    robot.data.root_lin_vel_w[:, 1] = speed * math.sin(yaw)
+    car = make_state(robot, track=Track(OFFICIAL, device="cpu"))
+
+    def steer(k_lead):
+        tuned = ControllerParams(k_lead=k_lead)
+        controller = Controller(
+            geometry,
+            build_reference(geometry, tuned, v_max=V_MAX),
+            tuned,
+            wheelbase_m=WHEELBASE,
+            max_steer_rad=VEHICLE.max_steer_rad,
+        )
+        return float(controller(car)[0, 1])
+
+    ahead = float(kappa[(index + step) % geometry.num_samples])
+    late, early = steer(0.0), steer(lead)
+    # Turning *into* the corner that is coming, so the extra steering carries
+    # the sign of the curvature ahead rather than merely being different.
+    assert abs(early) > abs(late)
+    assert (early - late > 0) == (ahead > 0)
 
 
 def test_slip_target_is_inert_at_zero(circle, robot, make_state):

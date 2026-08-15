@@ -235,6 +235,7 @@ GAIN_NAMES = (
     "k_beta",
     "k_rotate",
     "slip_gain",
+    "k_lead",
 )
 
 
@@ -344,7 +345,19 @@ class Controller:
         pursuit = torch.atan2(
             2.0 * self.wheelbase_m * torch.sin(alpha), lookahead.clamp(min=1e-3)
         )
-        feedforward = torch.atan(self.wheelbase_m * self._at(reference.kappa, s))
+        # Where the steering should aim, as opposed to where the car is. The
+        # servo is a first-order lag of about ten steps, so the angle commanded
+        # on this step is not on the wheels until the car is `k_lead * v` metres
+        # further round — and the curvature there, not here, is the one it has
+        # to match. Reading the reference at the led arc length is the inverse
+        # of that lag, which is the standard compensation for a known one.
+        #
+        # It is deliberately *not* applied to the cross-track feedback: that
+        # term corrects an error the car has now, and leading it would be
+        # correcting an error it has not made yet.
+        led = s + gains["k_lead"] * speed
+
+        feedforward = torch.atan(self.wheelbase_m * self._at(reference.kappa, led))
         feedback = -(gains["k_e"] * error + gains["k_d"] * error_rate)
 
         # ── What the car is actually doing, as opposed to where it is ─────

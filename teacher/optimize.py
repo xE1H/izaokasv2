@@ -144,6 +144,17 @@ parser.add_argument(
         "the two paths rather than a property of the driver."
     ),
 )
+parser.add_argument(
+    "--freeze-line",
+    action="store_true",
+    help=(
+        "Hold the racing line at the warm start's and search only the speed "
+        "profile and the gains. The line comes from a gradient solve on true "
+        "curvature, which is a better tool for it than CMA-ES: at 120 control "
+        "points it is 120 of the 170 dimensions, and the population is capped at "
+        "twelve by the environment count the simulator reproduces at."
+    ),
+)
 parser.add_argument("--allow-cpu", action="store_true")
 parser.add_argument(
     "--trace",
@@ -265,6 +276,7 @@ def search(
     rows = torch.arange(population * starts, device=env.device) // starts
 
     best_params, best_loss = warm, float("inf")
+    frozen_line = np.array(warm.line, dtype=np.float64)
     history: list[dict] = []
 
     for seed in range(args_cli.seeds):
@@ -308,6 +320,9 @@ def search(
                 started = time.time()
                 solutions = strategy.ask()
                 candidates = [ControllerParams.from_normalized(x) for x in solutions]
+            if args_cli.freeze_line:
+                for candidate in candidates:
+                    candidate.line = frozen_line
                 losses, details = score_generation(
                     env,
                     geometry,

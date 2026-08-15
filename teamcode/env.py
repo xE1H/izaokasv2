@@ -39,7 +39,12 @@ from lituanicax_sdk.spawn import SpawnManager
 from lituanicax_sdk.tracks import OFFICIAL
 
 #: How far ahead the policy looks, in centerline points. The official track's
-#: points are about 5 cm apart, so this is 0.3 m to 5 m.
+#: points average 4.1 cm apart, so this reaches about 0.25 m to 6.2 m.
+#:
+#: Counting in *points* rather than metres is a quiet advantage worth keeping:
+#: the centerline is sampled at 3.4 cm inside corners and 5.1 cm on straights,
+#: so a fixed index offset gives more metres of preview where the car is fast
+#: and fewer where it is slow, which is the right way round.
 #:
 #: Spaced geometrically rather than evenly, because what the car needs to know
 #: is not uniform in distance. The near end exists because the steering servo
@@ -49,15 +54,15 @@ from lituanicax_sdk.tracks import OFFICIAL
 #: the corner: at 5 m/s and the measured 8.3 m/s² of braking, shedding 2 m/s
 #: takes 1.7 m. Even spacing would spend most of its resolution on the straights,
 #: where nothing is decided.
-LOOKAHEAD_POINTS = [6, 12, 20, 32, 50, 72, 100]
+LOOKAHEAD_POINTS = [6, 12, 20, 32, 50, 75, 105, 150]
 
 #: How many numbers :meth:`TeamEnv.compute_observations` returns. It has to be
 #: declared, because it sizes the policy's input before the simulation starts.
 #:
 #: **Fixed once and then left alone.** ``train --resume`` cannot load a checkpoint
 #: whose observation width differs, so changing this discards every hour already
-#: spent. 13 scalars plus (x, y, curvature) at each lookahead point.
-OBSERVATION_SPACE = 13 + 3 * len(LOOKAHEAD_POINTS)
+#: spent. 16 scalars plus (x, y, curvature) at each lookahead point.
+OBSERVATION_SPACE = 16 + 3 * len(LOOKAHEAD_POINTS)
 
 #: Lap time the bonus pays out against, seconds. A lap slower than this earns
 #: nothing extra. Set above the deterministic controller's verified 14.900 s so
@@ -174,20 +179,36 @@ class TeamEnv(RaceEnv):
         0           Forward speed
         1           Lateral speed — how much the car is going sideways
         2           Yaw rate
-        3           Wheel slip
+        3           Slip velocity — wheel speed less ground speed, signed
         4           Distance from the centerline, signed left-positive
         5           Heading error against the track direction
         6           Distance to the nearest wall
-        7           Up-axis — 1 upright, 0 on its side
-        8           Roll angle
-        9, 10       Throttle and steering asked for on the previous step
-        11, 12      Distance to the next corner, and how tight it is
-        13..33      ``(x, y, curvature)`` of the centerline at each lookahead point
+        7           Roll angle
+        8           **Actual** steering angle, which lags the command
+        9, 10       Steering and throttle commanded this step
+        11          How much the steering command just moved
+        12, 13      Where on the lap, as cosine and sine of the arc phase
+        14, 15      Distance to the next corner, and how tight it is
+        16..39      ``(x, y, curvature)`` of the centerline at each lookahead point
         ==========  =================================================================
 
         Indices 4 and 5, and the lookahead, all flip automatically when the car
         drives the track the other way round, because ``car`` works out the
         direction of travel from the velocity.
+
+        **Where on the lap (12, 13) is deliberate**, against the usual advice
+        that a policy should not be handed its own position. Only one track is
+        raced, in one direction, from one point, so knowing *which* corner this
+        is turns out to be the whole game: the preview describes local shape but
+        cannot say that this particular corner feeds the 9.6 m straight and is
+        therefore worth sacrificing entry speed for. That trade is exactly what
+        the quasi-static teacher structurally cannot express, and it is where the
+        time between 14.9 s and 14.3 s has to come from.
+
+        Encoded as a point on a circle rather than as ``progress_m``, which is
+        the *short way* to the start line and so gives two positions the same
+        value. It is the track's arc, not a step counter, so the policy still
+        has to localise itself to use it.
 
         **The preview is the point.** The baseline's three numbers describe where
         the car is *now* and say nothing about where the track goes next, so it
@@ -196,47 +217,83 @@ class TeamEnv(RaceEnv):
         points carrying curvature is what lets a policy brake for a corner it
         cannot yet feel.
 
-        The previous commands are here for a specific measured reason: the
-        steering is an effort-limited servo that needs about ten control steps to
-        reach what it was asked for, so the wheels are never where the last
-        command said. A policy that cannot see what it already asked for is
-        guessing at its own actuator state.
+        The steering pair (8, 9) is here for a measured reason: the steering is
+        an effort-limited servo that needs about ten control steps to reach what
+        it was asked for, so for a third of a second the commanded angle and the
+        real one are different numbers. Giving both lets the policy see where in
+        that lag it currently is instead of inferring it.
 
-        Everything is scaled to roughly ``[-1, 1]``. The four-wheel quantities
-        (``wheel_slips``, ``suspension_travel``, ``applied_wheel_torque``) are
-        left out deliberately: they quadruple the width for detail that cannot be
-        acted on through two actions. So is ``progress_m``, which would invite
-        memorising the track by arc length rather than reading what is ahead.
+        Everything is scaled to roughly ``[-1, 1]``, sized from what the
+        quantity actually does on this car rather than from its theoretical
+        range — a divisor that never sees half its span wastes the input.
+
+        Left out deliberately: the four-wheel quantities (``wheel_slips``,
+        ``suspension_travel``, ``applied_wheel_torque``), which quadruple the
+        width for detail that cannot be acted on through two actions;
+        ``up_axis``, which is 1.0 across the whole state distribution reachable
+        before the episode ends and duplicates ``roll`` at lower resolution; and
+        anything from the lap clock, which would have the policy condition on a
+        variable that means one thing in training (an out-lap plus laps) and
+        another in a scored attempt (one standing start).
         """
-        max_speed = car.max_speed_m_s
+        track = car.track
+        # Where on the lap, as a point on a circle. Two numbers, no seam.
+        phase = 2.0 * math.pi * track.arc_length[car.nearest_idx] / track.track_length
 
         scalars = torch.stack(
             [
-                (car.speed_forward / max_speed).clamp(-1.0, 1.0),
-                (car.speed_lateral / max_speed).clamp(-1.0, 1.0),
+                (car.speed_forward / car.max_speed_m_s).clamp(-1.0, 1.0),
+                # Divided by 1.5 rather than top speed: sideways velocity lives
+                # in a range an order smaller than forward, and scaling it by
+                # 6.92 would squash the whole signal into +-0.05.
+                (car.speed_lateral / 1.5).clamp(-1.0, 1.0),
+                # 6 rad/s is the real ceiling: 3 m/s round the 0.55 m minimum
+                # radius is 5.45 rad/s.
                 (car.yaw_rate / 6.0).clamp(-1.0, 1.0),
-                car.slip.clamp(-1.0, 1.0),
-                (car.signed_cross_track_error / 0.35).clamp(-1.0, 1.0),
-                (car.heading_error / (0.5 * math.pi)).clamp(-1.0, 1.0),
-                (car.dist_to_wall / 0.35).clamp(0.0, 1.0),
-                car.up_axis.clamp(-1.0, 1.0),
-                (car.roll / 0.5).clamp(-1.0, 1.0),
-                car.throttle_cmd_prev.clamp(-1.0, 1.0),
-                car.steer_cmd_prev.clamp(-1.0, 1.0),
-                (car.dist_to_next_corner / 5.0).clamp(0.0, 1.0),
+                # Signed slip *velocity*, not `car.slip`. The ratio is unbounded
+                # at a standing start — it divides by a ground speed clamped at
+                # 1e-3 — and saturates any sane scaling. In m/s it is bounded,
+                # and the sign separates wheelspin from lock-up.
+                ((car.wheel_speed - car.speed_forward) / 2.0).clamp(-1.0, 1.0),
+                # 0.25 m, not the 0.35 m half-width: the car is retired at 0.15 m
+                # from a wall, so the usable half-corridor is 0.201 m and +-1
+                # should mean "at the limit", not "long since crashed".
+                (car.signed_cross_track_error / 0.25).clamp(-2.0, 2.0),
+                # Racing heading errors are within about +-0.4 rad, so pi/2
+                # would spend most of the range on angles that never occur.
+                (car.heading_error / 0.8).clamp(-2.0, 2.0),
+                (car.dist_to_wall / 0.35).clamp(0.0, 2.0),
+                (car.roll / 0.4).clamp(-1.0, 1.0),
+                # The actuator's own state. The steering is an effort-limited
+                # servo that takes about ten steps to reach what it was asked
+                # for, so the commanded angle and the real one are different
+                # numbers for a third of a second — and this is the real one.
+                # Without it the policy has to infer where in that lag it is.
+                (car.steer_angle / car.max_steer_rad).clamp(-1.0, 1.0),
+                car.steer_cmd.clamp(-1.0, 1.0),
+                car.throttle_cmd.clamp(-1.0, 1.0),
+                (car.steer_cmd - car.steer_cmd_prev).clamp(-1.0, 1.0),
+                torch.cos(phase),
+                torch.sin(phase),
+                (car.dist_to_next_corner / 6.0).clamp(0.0, 1.0),
                 (car.next_corner_curvature / 3.0).clamp(-1.0, 1.0),
             ],
             dim=-1,
         )
 
         # [N, len(LOOKAHEAD_POINTS), 3] of (forward, left, curvature) in the
-        # car's own frame. The furthest point is 5 m away, so metres divide by 5;
-        # curvature is up to about 3 1/m on the tightest corner here.
+        # car's own frame. The furthest point reaches about 6 m, so metres
+        # divide by 6; curvature peaks near 3 1/m on the tightest corner.
+        #
+        # Curvature is kept even though a dense sequence of (x, y) determines it,
+        # because it is a second derivative and making a three-layer network
+        # finite-difference it out of clipped, normalised inputs is a tax for
+        # nothing.
         preview = car.lookahead(LOOKAHEAD_POINTS)
         preview = torch.stack(
             [
-                (preview[..., 0] / 5.0).clamp(-1.0, 1.0),
-                (preview[..., 1] / 5.0).clamp(-1.0, 1.0),
+                (preview[..., 0] / 6.0).clamp(-1.0, 1.0),
+                (preview[..., 1] / 6.0).clamp(-1.0, 1.0),
                 (preview[..., 2] / 3.0).clamp(-1.0, 1.0),
             ],
             dim=-1,
@@ -378,6 +435,22 @@ class TeamEnv(RaceEnv):
         # where this method is not called. So there is no double counting.
         self._stall_steps, stalled = rules.stalled(car, self._stall_steps)
 
+        # Driving the wrong way round. This closes a hole the reward would
+        # otherwise leave open: the distance term is signed, so a car pointing
+        # backwards is paid negatively on every step, and since ending an
+        # episode is worth exactly zero, *crashing deliberately* becomes the
+        # best move available to it. Ending the episode here removes the
+        # incentive without asking the policy to learn a recovery it will never
+        # need — a scored attempt always starts pointing the right way.
+        #
+        # Gated on actually moving, because `going_forward` falls back to the
+        # heading below 0.2 m/s and would otherwise fire on a car that is simply
+        # braking hard.
+        wrong_way = (
+            ~car.going_forward & (car.speed_ground > 0.5) & (car.episode_step > 30)
+        )
+
         self.log("Terminations/crashed", crashed.float())
         self.log("Terminations/stalled", stalled.float())
-        return crashed | stalled
+        self.log("Terminations/wrong_way", wrong_way.float())
+        return crashed | stalled | wrong_way

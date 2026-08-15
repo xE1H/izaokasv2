@@ -24,12 +24,21 @@ class TeamPPORunnerCfg(RslRlOnPolicyRunnerCfg):
 
     # One "iteration" = collect `num_steps_per_env` steps in every environment,
     # then run a few passes of gradient descent over that batch of experience.
-    num_steps_per_env: int = 800
-    #: 50 was a smoke-test budget. A lap is ~15 s and the policy has to find one
-    #: before it can start shaving it, which takes tens of iterations on its own.
-    #: At roughly 2 min/iteration on 3072 environments this is about ten hours.
-    max_iterations: int = 300
-    save_interval: int = 5  # save a checkpoint every N iterations
+    #: 800 steps is 26.7 s of driving per environment per iteration, and it buys
+    #: nothing: RSL-RL truncates GAE at the rollout boundary and bootstraps with
+    #: ``V(s_T)``, and because ``is_finite_horizon`` is False the timeout
+    #: bootstrap is correct too, so there is no requirement that a lap fit inside
+    #: one rollout. What it costs is enormous — at 3072 environments it is 2.5 M
+    #: samples fed to 30 gradient steps, so most of an expensive simulation is
+    #: spent generating data the optimiser barely reads. 128 steps collects 393 k
+    #: samples and takes 20 gradient steps on them, which is roughly six times
+    #: more policy improvement per GPU-hour at the same sample count.
+    num_steps_per_env: int = 128
+    #: 50 was a smoke-test budget. With the shorter rollout an iteration is a few
+    #: seconds of simulation rather than two minutes, so this is the same order
+    #: of wall-clock as before and many more updates.
+    max_iterations: int = 1000
+    save_interval: int = 25  # save a checkpoint every N iterations
 
     # A label for the experiment.  Checkpoints go to logs/<timestamp>/ either
     # way; this only names the run in wandb / neptune, if you enable them.
@@ -55,21 +64,27 @@ class TeamPPORunnerCfg(RslRlOnPolicyRunnerCfg):
         init_noise_std=1.0,
         actor_obs_normalization=True,  # keep network inputs on a common scale
         critic_obs_normalization=True,
-        # 64 units was sized for three observations. There are now 34, twenty-one
-        # of which are a curvature preview of the track ahead, and the policy is
-        # meant to treat each corner differently rather than learn one rule for
-        # all of them.
-        actor_hidden_dims=[256, 256, 128],
-        critic_hidden_dims=[256, 256, 128],
+        # 64 units was sized for three observations. There are now 40, of which
+        # 24 are a curvature preview of the track ahead and two say where on the
+        # lap the car is, and the policy is meant to treat each of the thirteen
+        # corners differently rather than learn one rule for all of them. Locked
+        # alongside the observation width by --resume, so this takes the larger
+        # of the two sizes considered.
+        actor_hidden_dims=[512, 256, 128],
+        critic_hidden_dims=[512, 256, 128],
         activation="elu",
     )
 
     # ── The PPO algorithm itself ───────────────────────────────────────────
     algorithm: RslRlPpoAlgorithmCfg = RslRlPpoAlgorithmCfg(
-        learning_rate=1e-4,
+        # A seed for the adaptive schedule, not a fixed rate: it moves the rate
+        # by 1.5x per update towards `desired_kl` and converges from either
+        # side, so starting an order of magnitude low just wastes the first
+        # updates finding its way back up.
+        learning_rate=5e-4,
         schedule="adaptive",  # auto-tune the learning rate to hit `desired_kl`
-        num_learning_epochs=6,  # passes over each batch of collected experience
-        num_mini_batches=6,
+        num_learning_epochs=5,  # passes over each batch of collected experience
+        num_mini_batches=4,
         clip_param=0.2,  # how far the policy may move in a single update
         entropy_coef=0.006,  # higher = keeps exploring for longer
         value_loss_coef=1.0,

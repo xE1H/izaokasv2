@@ -164,7 +164,38 @@ parser.add_argument(
 )
 AppLauncher.add_app_launcher_args(parser)
 args_cli, _ = parser.parse_known_args()
+argv_original = list(sys.argv)
 sys.argv = [sys.argv[0]]
+
+
+def measure_each_in_its_own_process(files: list[str]) -> int:
+    """Re-run this command once per file, because a reused env is not the benchmark.
+
+    Measuring several files in one process reuses one simulator across all of
+    them, and that is *not* what the benchmark does — it builds a fresh env for
+    the candidate it scores. The difference is not academic: the identical file
+    measured three times in one process reads 15.500 s, then 15.367 s, then
+    15.367 s. Only the first is a benchmark condition; everything after it is
+    scored on a simulator carrying the previous attempt's residue, and reads
+    about 0.13 s fast.
+
+    That silently corrupted every multi-file comparison run through here, since
+    file #1 was held to the official condition and its rivals were not. So the
+    fan-out happens before Isaac is launched, and each file gets a cold process.
+    """
+    import subprocess  # noqa: PLC0415
+
+    head = [a for a in argv_original if a not in files]
+    head = [a for a in head if a != "--measure"]
+    status = 0
+    for path in files:
+        print(f"\n[optimize] === {Path(path).name} — fresh simulator ===", flush=True)
+        status |= subprocess.call([sys.executable, *head, "--measure", path])
+    return status
+
+
+if args_cli.measure and len(args_cli.measure) > 1:
+    sys.exit(measure_each_in_its_own_process(list(args_cli.measure)))
 
 app_launcher = AppLauncher(args_cli)
 simulation_app = app_launcher.app

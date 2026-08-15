@@ -189,6 +189,7 @@ def three_pass_profile(
     a_brake: float,
     v_max: float,
     steer_ceiling: np.ndarray | None = None,
+    ceiling_scale: np.ndarray | float = 1.0,
     iterations: int = 6,
     tolerance: float = 1e-4,
 ) -> np.ndarray:
@@ -206,6 +207,12 @@ def three_pass_profile(
         steer_ceiling: optional ``[..., M]`` per-point speed cap from
             :func:`steering_ceiling`. Without it the profile will happily specify
             a radius the car cannot point its wheels round at the speed asked.
+        ceiling_scale: ``[..., M]`` multiplier on the *cornering* ceiling, before
+            the sweeps run. This is where a per-corner speed correction belongs.
+            Applied afterwards it produces a speed the car cannot brake from,
+            because the backward pass that would have planned the braking has
+            already been and gone; applied here, asking for more speed through a
+            corner also asks for the braking that gets the car out of it.
         iterations: how many times to sweep forward and back. The passes wrap
             around the loop, so one sweep is not enough — a braking zone that
             starts before the start/finish line has to propagate across it.
@@ -229,7 +236,7 @@ def three_pass_profile(
 
     count = seg.shape[-1]
     # 1. The ceilings: what the tyres allow, and what the steering allows.
-    speed = np.minimum(v_max, np.sqrt(a_lat / np.maximum(kappa, 1e-9)))
+    speed = np.minimum(v_max, np.sqrt(a_lat / np.maximum(kappa, 1e-9)) * ceiling_scale)
     if steer_ceiling is not None:
         speed = np.minimum(speed, steer_ceiling)
 

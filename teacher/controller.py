@@ -201,8 +201,9 @@ def build_reference(
         a_brake=params.a_brake_eff,
         v_max=v_max,
         steer_ceiling=ceiling,
+        ceiling_scale=scale,
     )
-    speed = np.clip(speed * scale, 0.1, v_max)
+    speed = np.clip(speed, 0.1, v_max)
     gradient = _speed_gradient(speed, segment)
 
     to_tensor = lambda a: torch.tensor(a, dtype=torch.float32, device=geometry.device)  # noqa: E731

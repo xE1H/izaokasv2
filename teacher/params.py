@@ -140,10 +140,29 @@ SCALAR_BOUNDS: dict[str, Bound] = {
     #    to slide does not need the wheels to point all the way round the corner.
     #    At 1.0 the ceiling is inert and the profile is the one that came before.
     "steer_ratio_eff": Bound(0.35, 1.0),
-    #    Sideslip the reference asks for, per 1/m of curvature. This is the one
-    #    term that lets the car beat the point-mass model: everything else
-    #    assumes it goes where its wheels point, and at 41% steering saturation
-    #    it demonstrably cannot. At 0 the law is the one that produced 15.067 s.
+    #    Sideslip the reference asks for, per 1/m of curvature. The idea was that
+    #    this is the one term that lets the car beat the point-mass model, since
+    #    everything else assumes it goes where its wheels point and at 55%
+    #    steering saturation it demonstrably cannot.
+    #
+    #    **Measured, it does not work, and the reason is structural.** Swept
+    #    against the 14.900 s driver with `k_beta` explicitly non-zero -- which
+    #    matters, because the term is `k_beta * (sideslip - slip_target)` and is
+    #    inert at `k_beta = 0` however much slip is commanded, so an earlier
+    #    sweep of this parameter alone tested nothing:
+    #
+    #        k_beta 0.5, slip 0.05   15.100 s   (against 14.900)
+    #        k_beta 1.0, slip 0.05   no lap
+    #        k_beta 0.5, slip 0.12   no lap
+    #        k_beta 1.2, slip 0.12   no lap
+    #        k_beta 1.0, slip 0.20   no lap
+    #
+    #    Monotonically worse with magnitude. The car is all-wheel drive
+    #    (`vehicle.py:135-140`), so throttle consumes front grip too and tends to
+    #    understeer rather than rotate, and the servo is effort-limited against
+    #    self-aligning torque, so a sliding car has *less* steering authority,
+    #    not more. Left in the search space at 0 because it costs nothing there,
+    #    but do not expect it to pay.
     "slip_gain": Bound(0.0, 0.20),
     #    Seconds of *lead* on the reference the steering aims at. The servo is a
     #    first-order lag of about 0.33 s, so an angle commanded now arrives two

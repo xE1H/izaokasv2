@@ -94,11 +94,12 @@ SCALAR_BOUNDS: dict[str, Bound] = {
     "L_max": Bound(0.2, 3.0),
     # ── Steering blend. Pure pursuit and curvature feedforward both produce a
     #    steering angle; the search decides how much to trust each.
-    #    Widened from 2.5: the wheels only reach about 75% of the angle they are
-    #    commanded at cornering speed, so a gain above one is the car's physics
-    #    rather than a mistuning, and the search had pushed w_ff to 2.40 of 2.5.
-    "w_pp": Bound(0.0, 4.0),
-    "w_ff": Bound(0.0, 4.0),
+    #    Widened twice, and for the same reason both times: the wheels only reach
+    #    about 75% of the angle they are commanded at cornering speed, so a gain
+    #    above one is the car's physics rather than a mistuning. w_ff sat at 2.40
+    #    of 2.5; then w_pp sat at 3.84 of 4.0.
+    "w_pp": Bound(0.0, 6.0),
+    "w_ff": Bound(0.0, 6.0),
     # ── Cross-track PD, in radians of steer per metre and per m/s.
     "k_e": Bound(0.0, 8.0),
     "k_d": Bound(0.0, 3.0),
@@ -136,13 +137,24 @@ LINE_BOUND = Bound(-0.18, 0.18)
 
 #: Speed multiplier on the quasi-static profile.
 #:
-#: Widened from (0.7, 1.15) because the search pressed against *both* ends — its
-#: knots ran 0.704 to 1.136 — and a parameter pinned at its bounds is a bound
-#: choosing the answer. The asymmetry is gone with it: the original reasoning was
-#: that being optimistic ends an attempt while being pessimistic only costs time,
-#: which is true of a single attempt and false of the competition, where the
-#: fastest of ten counts and nine failures are free.
-SPEED_BOUND = Bound(0.5, 1.5)
+#: Widened twice, both times because the search was pressed against the bound and
+#: a parameter pinned at its bound is a bound choosing the answer. First from
+#: (0.7, 1.15), whose knots ran 0.704 to 1.136. Then the ceiling from 1.5, which
+#: two of thirty knots sat exactly on.
+#:
+#: That second one is not just tidiness. :func:`~tools.profile.three_pass_profile`
+#: caps every corner at the *steady-state* ``sqrt(a_lat/kappa)``, and the car does
+#: not have to be in steady state: it holds 12.5 m/s² for about a second before
+#: roll builds, and the corners here last about a second. This multiplier is the
+#: only way the reference can ask for a brief excursion above the sustained limit,
+#: so capping it at 1.5 capped the one mechanism the measurements actually
+#: support.
+#:
+#: The asymmetry went with the first widening: the original reasoning was that
+#: being optimistic ends an attempt while being pessimistic only costs time, which
+#: is true of one attempt and false of this competition, where the fastest of ten
+#: counts and nine failures are free.
+SPEED_BOUND = Bound(0.5, 2.2)
 
 #: Total number of searched parameters.
 DIMENSION = LINE_POINTS + SPEED_POINTS + len(SCALAR_BOUNDS)

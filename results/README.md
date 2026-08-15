@@ -9,16 +9,35 @@ costs a GPU session.
 
 | file | what it is |
 |---|---|
-| `teacher-best.json` | **the best verified driver: 15.067 s** |
+| `teacher-best.json` | **the best verified driver: 14.900 s** |
+| `trace-best.npz` | its scored lap, per step — inputs and outputs of the control law |
 | `final-s1.json`, `final-s2.json` | where two independent CMA-ES runs finished |
 | `teacher-warmstart.json` | the unoptimized starting point |
+| `driven-line.png` | the path the car drives, against the one it is given |
 
-`teacher-best.json` verifies at **15.067 s** at the official 60 s window, ten
+`teacher-best.json` verifies at **14.900 s** at the official 60 s window, ten
 environments, official rules — `python -m teacher.optimize --headless --measure
-results/teacher-best.json`. It re-measures at 15.167 s; the ~0.1 s is chaotic
-sensitivity between runs, not drift.
+results/teacher-best.json`. Re-runs land within about 0.03 s.
 
 Against a board best of 14.3 s, and 17.367 s where this session started.
+
+### Measure one file per process
+
+`--measure` used to build one environment and reuse it for every file named on
+the command line. The benchmark does not: it builds a fresh one. The identical
+file measured three times in a single process reads
+
+    v3.json  15.500 s    <- the only benchmark-faithful number
+    v3.json  15.367 s
+    v3.json  15.367 s
+
+so everything after the first is scored on a simulator carrying the previous
+attempt's residue and reads about 0.13 s fast. That silently corrupted every
+multi-file comparison — file #1 was held to the official condition and its
+rivals were not — and it is how a six-candidate sweep crowned a vector that,
+measured alone, does not complete a lap. `--measure` now fans out to one cold
+process per file. **Any figure in an older note that came from a multi-file
+run is suspect.**
 
 ## The car
 
@@ -49,9 +68,39 @@ measured.
 
 ## What is known about the ceiling
 
-The quasi-static model on these numbers predicts **15.05 s** for a line the car
-can steer; the car does 15.067. It is executing its own plan to within 0.02 s, so
-the remaining gap to 14.3 s is in the model rather than the tracking.
+Read `driven-line.png` first: it is the traced lap coloured by speed, and it
+settles where the time is. The lap is **power-limited where the track is
+straight and grip-limited where it is not**:
+
+* peak **5.21 m/s against a 6.92 m/s top speed** — never close to maximum, even
+  on the long straight. The falloff explains it: at 3 m/s the car has 2.78 m/s²
+  left and at 5 m/s only 1.36, so ~5.2 is the straight's honest ceiling.
+* **2.85–3.05 m/s through the R = 1.0 m corners**, against a grip limit of
+  `sqrt(9.62 × 1.0) = 3.10` — already at the limit.
+
+A note on reading the line at all: the **reference is not the path**. The
+steering is a first-order lag and pure pursuit aims ahead, so the car smooths
+whatever it is handed — reference R_min 0.308 m against a driven R_min of
+0.583 m on the same lap. Judging the line off the parameter vector is measuring
+the wrong curve, and the corridor bound applies to *knot values*, not to the
+lateral offset the car reaches.
+
+### What moved the number, and what did not
+
+The one structural gain this session was **lead compensation**. Every steering
+term read the reference at the car's own arc length, but the servo needs about
+0.33 s, so the commanded angle lands two metres further round — most of a corner
+here. Reading the reference at `s + k_lead·v` inverts that known lag and is
+worth **0.567 s** (15.500 → 14.933). At `k_lead = 0` the law is bit-identical to
+its predecessor.
+
+Everything substituted wholesale **failed to complete a lap**: a re-solved wider
+line, a scaled line, a blended line, rate-limited lines, and physically honest
+profile constants. The gains and the line are tightly co-adapted, so the search
+is the only thing that can move them together. Relatedly, the `*_eff` scalars
+are *effective* parameters absorbing model error, not physical claims —
+`a_accel_eff` sits at 10.89 against a measured 4.90, and correcting it to the
+truth stops the car lapping.
 
 All three ways to beat a point-mass model were implemented and measured on
 `teacher-best.json`, and all three are worse — deliberate sideslip gives no lap

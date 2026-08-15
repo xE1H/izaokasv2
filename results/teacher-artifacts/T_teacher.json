@@ -1,0 +1,35 @@
+{
+  "artifacts/teacher-s3.json": {
+    "T_teacher": null,
+    "median_lap_time_s": null,
+    "slowest_lap_time_s": null,
+    "completions": 0,
+    "attempts": 10,
+    "lap_times_s": [
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null
+    ],
+    "outcomes": [
+      "crashed",
+      "crashed",
+      "crashed",
+      "crashed",
+      "crashed",
+      "crashed",
+      "crashed",
+      "crashed",
+      "crashed",
+      "crashed"
+    ],
+    "episode_length_s": 60.0,
+    "summary": "no lap in 10 attempts, best got 77% round"
+  }
+}

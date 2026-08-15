@@ -1,0 +1,14 @@
+{
+  "best_loss": 16.666667938232422,
+  "history": [
+    {
+      "seed": 0,
+      "generation": 8999,
+      "loss": 16.666667938232422,
+      "candidates_lapping": 1,
+      "completions": 1,
+      "best_lap_time_s": 16.666667938232422,
+      "best_progress": 1.0022772550582886
+    }
+  ]
+}

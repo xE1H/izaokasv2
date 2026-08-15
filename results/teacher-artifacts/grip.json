@@ -1,0 +1,67 @@
+{
+  "rollover_a_lat_m_s2": 20.158031463623047,
+  "highest_sustained_m_s2": 9.620254516601562,
+  "highest_seen_m_s2": 51.92462921142578,
+  "levels": [
+    {
+      "steer": 0.35,
+      "peak_a_lat": 16.461217880249023,
+      "held_a_lat": 5.087922096252441,
+      "speed_m_s": 6.766857147216797,
+      "drift_m_s": 0.08888959884643555,
+      "wheels_rad": 0.10000499337911606,
+      "ended": "survived",
+      "ended_at_step": 901
+    },
+    {
+      "steer": 0.5,
+      "peak_a_lat": 20.158031463623047,
+      "held_a_lat": 6.33237886428833,
+      "speed_m_s": 4.894454002380371,
+      "drift_m_s": 0.1546359658241272,
+      "wheels_rad": 0.1558157354593277,
+      "ended": "tipped",
+      "ended_at_step": 619
+    },
+    {
+      "steer": 0.65,
+      "peak_a_lat": 17.380144119262695,
+      "held_a_lat": 9.620254516601562,
+      "speed_m_s": 6.837404251098633,
+      "drift_m_s": 0.17229068279266357,
+      "wheels_rad": 0.19870468974113464,
+      "ended": "survived",
+      "ended_at_step": 901
+    },
+    {
+      "steer": 0.8,
+      "peak_a_lat": 51.92462921142578,
+      "held_a_lat": 12.499578475952148,
+      "speed_m_s": 6.421690940856934,
+      "drift_m_s": 0.2567610740661621,
+      "wheels_rad": 0.2581028342247009,
+      "ended": "tipped",
+      "ended_at_step": 875
+    },
+    {
+      "steer": 0.9,
+      "peak_a_lat": 35.57516098022461,
+      "held_a_lat": 12.188542366027832,
+      "speed_m_s": 6.0051422119140625,
+      "drift_m_s": 0.2467842698097229,
+      "wheels_rad": 0.2885066866874695,
+      "ended": "tipped",
+      "ended_at_step": 668
+    },
+    {
+      "steer": 1.0,
+      "peak_a_lat": 39.317771911621094,
+      "held_a_lat": 12.444467544555664,
+      "speed_m_s": 5.664174556732178,
+      "drift_m_s": 0.26979970932006836,
+      "wheels_rad": 0.32369908690452576,
+      "ended": "tipped",
+      "ended_at_step": 633
+    }
+  ]
+}

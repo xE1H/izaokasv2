@@ -156,9 +156,24 @@ SCALAR_BOUNDS: dict[str, Bound] = {
     "k_lead": Bound(0.0, 0.6),
 }
 
-#: Corridor for the line, metres either side of the centerline. Matches
-#: :data:`tools.profile.DEFAULT_HALF_WIDTH_M`.
-LINE_BOUND = Bound(-0.18, 0.18)
+#: Corridor for the line, metres either side of the centerline.
+#:
+#: The rules permit 0.201: a 0.351 m half-width less the 0.15 m wall-contact
+#: radius. This was 0.18, holding 21 mm back as tracking margin, and the best
+#: line came back pinned at 0.17999 -- a parameter against its bound is a bound
+#: choosing the answer, and here it was choosing a slower line. Re-solving the
+#: min-time line across corridor and grip prices the difference:
+#:
+#:     model lap (s)      0.100    0.140    0.180    0.201  <- half-width
+#:     a_lat  9.62        14.51    14.29    14.10    14.13
+#:     a_lat 12.20        13.36    13.19    13.05    12.96
+#:
+#: so the margin was worth about 0.2 s of lap time at the measured grip. Set to
+#: 0.195, leaving 6 mm: less than the 15 mm median tracking error, which is the
+#: point -- the search pays for a wall with a voided lap, so it is better placed
+#: than a fixed margin to decide where the width is worth taking and where it
+#: is not. It does not have to use all of it, and on most of the lap it will not.
+LINE_BOUND = Bound(-0.195, 0.195)
 
 #: Speed multiplier on the quasi-static profile.
 #:

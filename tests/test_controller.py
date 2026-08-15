@@ -76,6 +76,25 @@ def test_dimension_matches_the_documented_groups():
     assert DIMENSION == 171
 
 
+def test_the_line_cannot_be_searched_into_a_wall():
+    """The corridor bound is the only thing standing between the search and a
+    voided lap, and it has been widened once already.
+
+    A car is retired the moment its centre comes within 0.15 m of a wall, and
+    the walls sit 0.351 m either side, so 0.201 m is the whole legal budget.
+    Widening past it would let CMA-ES chase lap times that no attempt can
+    actually bank — the fastest candidate would be one that never finishes.
+    """
+    from lituanicax_sdk.rules import WALL_COLLISION_RADIUS_M
+
+    from teacher.params import LINE_BOUND
+
+    legal = 0.351 - WALL_COLLISION_RADIUS_M
+    assert LINE_BOUND.high <= legal
+    assert LINE_BOUND.low >= -legal
+    assert LINE_BOUND.high == -LINE_BOUND.low, "the corridor must be symmetric"
+
+
 def test_vector_round_trip():
     params = ControllerParams()
     assert np.allclose(
